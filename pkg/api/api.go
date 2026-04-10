@@ -698,6 +698,7 @@ type Stack struct {
 	Status      string
 	ConfigFiles string
 	Reason      string
+	Watching    bool `json:"watching,omitempty"`
 }
 
 // LogConsumer is a callback to process log messages from services
