@@ -4,3 +4,5 @@ coverage.out
 covdatafiles/
 .DS_Store
 pkg/e2e/*.tar
+
+.gocache
