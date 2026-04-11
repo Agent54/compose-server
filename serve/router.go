@@ -51,9 +51,10 @@ type apiSchema struct {
 }
 
 type schemaConfig struct {
-	RootDir      string   `json:"rootDir"`
-	MaxDepth     int      `json:"maxDepth"`
-	ExcludedDirs []string `json:"excludedDirs"`
+	RootDir        string   `json:"rootDir"`
+	MaxDepth       int      `json:"maxDepth"`
+	ExcludedDirs   []string `json:"excludedDirs"`
+	AllowedOrigins []string `json:"allowedOrigins,omitempty"`
 }
 
 type routeSpec struct {
@@ -85,9 +86,10 @@ func (r *composeRouter) rootSchema(ctx context.Context, w http.ResponseWriter, r
 	return writeJSON(w, http.StatusOK, apiSchema{
 		VersionMatcher: "/v{version:[0-9.]+}",
 		Config: schemaConfig{
-			RootDir:      r.app.config.rootDir,
-			MaxDepth:     r.app.config.maxDepth,
-			ExcludedDirs: slices.Clone(r.app.config.excludedDir),
+			RootDir:        r.app.config.rootDir,
+			MaxDepth:       r.app.config.maxDepth,
+			ExcludedDirs:   slices.Clone(r.app.config.excludedDir),
+			AllowedOrigins: slices.Clone(r.app.config.allowedOrigins),
 		},
 		Routes: schemaFromRouteSpecs(),
 	})
