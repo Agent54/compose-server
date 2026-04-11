@@ -22,7 +22,7 @@ func TestListProjectsRouteSupportsVersionedPath(t *testing.T) {
 
 	server := &engineserver.Server{}
 	server.UseMiddleware(*versionMiddleware)
-	app := newServerApp(serveConfig{rootDir: ".", maxDepth: defaultMaxDepth, excludedDir: defaultExcludedDirs}, nil)
+	app := newServerApp(serveConfig{rootDir: ".", maxDepth: defaultMaxDepth, excludedDir: defaultExcludedDirs}, nil, nil)
 	app.listOverride = func(ctx context.Context, options composeapi.ListOptions) ([]composeapi.Stack, error) {
 		assert.Equal(t, options.All, true)
 		return []composeapi.Stack{{Name: "demo"}}, nil
@@ -48,7 +48,7 @@ func TestListProjectsRouteRejectsUnsupportedVersion(t *testing.T) {
 
 	server := &engineserver.Server{}
 	server.UseMiddleware(*versionMiddleware)
-	app := newServerApp(serveConfig{rootDir: ".", maxDepth: defaultMaxDepth, excludedDir: defaultExcludedDirs}, nil)
+	app := newServerApp(serveConfig{rootDir: ".", maxDepth: defaultMaxDepth, excludedDir: defaultExcludedDirs}, nil, nil)
 	app.listOverride = func(ctx context.Context, options composeapi.ListOptions) ([]composeapi.Stack, error) {
 		t.Fatal("list should not be called for unsupported versions")
 		return nil, nil
@@ -69,7 +69,7 @@ func TestListProjectsRouteAppliesNameFilter(t *testing.T) {
 
 	server := &engineserver.Server{}
 	server.UseMiddleware(*versionMiddleware)
-	app := newServerApp(serveConfig{rootDir: ".", maxDepth: defaultMaxDepth, excludedDir: defaultExcludedDirs}, nil)
+	app := newServerApp(serveConfig{rootDir: ".", maxDepth: defaultMaxDepth, excludedDir: defaultExcludedDirs}, nil, nil)
 	app.listOverride = func(ctx context.Context, options composeapi.ListOptions) ([]composeapi.Stack, error) {
 		return []composeapi.Stack{{Name: "demo"}, {Name: "other"}}, nil
 	}
@@ -99,7 +99,7 @@ func TestRootReturnsSchemaFromRouteDefinitions(t *testing.T) {
 		excludedDir:    []string{".git", "node_modules"},
 		allowedOrigins: []string{"http://localhost:3000"},
 	}
-	mux := server.CreateMux(context.Background(), newRouter(newServerApp(cfg, nil)))
+	mux := server.CreateMux(context.Background(), newRouter(newServerApp(cfg, nil, nil)))
 
 	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	resp := httptest.NewRecorder()
@@ -117,4 +117,17 @@ func TestRootReturnsSchemaFromRouteDefinitions(t *testing.T) {
 	assert.DeepEqual(t, schema.Config.AllowedOrigins, cfg.allowedOrigins)
 	assert.Equal(t, schema.Routes[0].Path, "/")
 	assert.Equal(t, schema.Routes[0].Method, http.MethodGet)
+	assert.Assert(t, hasRoute(schema.Routes, http.MethodPost, "/start/{project}"))
+	assert.Assert(t, hasRoute(schema.Routes, http.MethodGet, "/events/{project}"))
+	assert.Assert(t, hasRoute(schema.Routes, http.MethodGet, "/stats/{project}"))
+	assert.Assert(t, hasRoute(schema.Routes, http.MethodPost, "/pause/{project}"))
+}
+
+func hasRoute(routes []routeSchema, method, path string) bool {
+	for _, route := range routes {
+		if route.Method == method && route.Path == path {
+			return true
+		}
+	}
+	return false
 }
