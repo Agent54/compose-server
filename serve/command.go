@@ -27,17 +27,19 @@ import (
 const defaultMaxDepth = 4
 
 type serveConfig struct {
-	rootDir     string
-	maxDepth    int
-	excludedDir []string
+	rootDir        string
+	maxDepth       int
+	excludedDir    []string
+	allowedOrigins []string
 }
 
 // NewCommand creates the compose daemon command.
 func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.Command {
 	var (
-		port       int
-		maxDepth   int
-		exclusions []string
+		port           int
+		maxDepth       int
+		exclusions     []string
+		allowedOrigins []string
 	)
 
 	cmd := &cobra.Command{
@@ -49,9 +51,10 @@ func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.C
 			defer stop()
 
 			cfg := serveConfig{
-				rootDir:     ".",
-				maxDepth:    maxDepth,
-				excludedDir: slices.Clone(exclusions),
+				rootDir:        ".",
+				maxDepth:       maxDepth,
+				excludedDir:    slices.Clone(exclusions),
+				allowedOrigins: slices.Clone(allowedOrigins),
 			}
 			if len(args) > 0 {
 				cfg.rootDir = args[0]
@@ -74,12 +77,14 @@ func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.C
 			_, _ = fmt.Fprintf(dockerCli.Out(), "Serve root: %s\n", cfg.rootDir)
 			_, _ = fmt.Fprintf(dockerCli.Out(), "Max depth: %d\n", cfg.maxDepth)
 			_, _ = fmt.Fprintf(dockerCli.Out(), "Excluded dirs: %s\n", strings.Join(cfg.excludedDir, ", "))
+			_, _ = fmt.Fprintf(dockerCli.Out(), "Allowed origins: %s\n", formatAllowedOrigins(cfg.allowedOrigins))
 			return srv.run(ctx)
 		},
 	}
 	cmd.Flags().IntVarP(&port, "port", "p", 0, "Listen on the given TCP port instead of a unix socket")
 	cmd.Flags().IntVar(&maxDepth, "max-depth", defaultMaxDepth, "Maximum directory depth to crawl for Compose files")
 	cmd.Flags().StringArrayVar(&exclusions, "exclude", slices.Clone(defaultExcludedDirs), "Directory names to exclude while crawling")
+	cmd.Flags().StringArrayVar(&allowedOrigins, "allowed-origins", nil, "Allowed CORS origins; repeat the flag to allow multiple origins")
 	return cmd
 }
 
@@ -95,8 +100,15 @@ func newHTTPServer(target serveTarget, cfg serveConfig, backend backendFactory) 
 	mux := server.CreateMux(context.Background(), newRouter(newServerApp(cfg, backend)))
 	return &httpServer{
 		target: target,
-		server: &http.Server{Handler: mux},
+		server: &http.Server{Handler: wrapCORS(mux, cfg.allowedOrigins)},
 	}, nil
+}
+
+func formatAllowedOrigins(origins []string) string {
+	if len(origins) == 0 {
+		return "(disabled)"
+	}
+	return strings.Join(origins, ", ")
 }
 
 type serveTarget struct {

@@ -93,7 +93,12 @@ func TestRootReturnsSchemaFromRouteDefinitions(t *testing.T) {
 
 	server := &engineserver.Server{}
 	server.UseMiddleware(*versionMiddleware)
-	cfg := serveConfig{rootDir: "/srv/work", maxDepth: 3, excludedDir: []string{".git", "node_modules"}}
+	cfg := serveConfig{
+		rootDir:        "/srv/work",
+		maxDepth:       3,
+		excludedDir:    []string{".git", "node_modules"},
+		allowedOrigins: []string{"http://localhost:3000"},
+	}
 	mux := server.CreateMux(context.Background(), newRouter(newServerApp(cfg, nil)))
 
 	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
@@ -109,6 +114,7 @@ func TestRootReturnsSchemaFromRouteDefinitions(t *testing.T) {
 	assert.Equal(t, schema.Config.RootDir, cfg.rootDir)
 	assert.Equal(t, schema.Config.MaxDepth, cfg.maxDepth)
 	assert.DeepEqual(t, schema.Config.ExcludedDirs, cfg.excludedDir)
+	assert.DeepEqual(t, schema.Config.AllowedOrigins, cfg.allowedOrigins)
 	assert.Equal(t, schema.Routes[0].Path, "/")
 	assert.Equal(t, schema.Routes[0].Method, http.MethodGet)
 }
