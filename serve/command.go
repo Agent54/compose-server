@@ -68,6 +68,11 @@ func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.C
 			srv, err := newHTTPServer(target, cfg, func() (composeapi.Compose, error) {
 				opts := append(slices.Clone(backendOpts), composepkg.WithEventProcessor(noopEventProcessor{}))
 				return composepkg.NewComposeService(dockerCli, opts...)
+			}, func() (statsRuntime, error) {
+				return statsRuntime{
+					client: dockerCli.Client(),
+					osType: dockerCli.ServerInfo().OSType,
+				}, nil
 			})
 			if err != nil {
 				return err
@@ -88,7 +93,7 @@ func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.C
 	return cmd
 }
 
-func newHTTPServer(target serveTarget, cfg serveConfig, backend backendFactory) (*httpServer, error) {
+func newHTTPServer(target serveTarget, cfg serveConfig, backend backendFactory, stats statsRuntimeFactory) (*httpServer, error) {
 	versionMiddleware, err := middleware.NewVersionMiddleware(internal.Version, api.DefaultVersion, api.MinSupportedAPIVersion)
 	if err != nil {
 		return nil, err
@@ -97,7 +102,7 @@ func newHTTPServer(target serveTarget, cfg serveConfig, backend backendFactory) 
 	server := &engineserver.Server{}
 	server.UseMiddleware(*versionMiddleware)
 
-	mux := server.CreateMux(context.Background(), newRouter(newServerApp(cfg, backend)))
+	mux := server.CreateMux(context.Background(), newRouter(newServerApp(cfg, backend, stats)))
 	return &httpServer{
 		target: target,
 		server: &http.Server{Handler: wrapCORS(mux, cfg.allowedOrigins)},
