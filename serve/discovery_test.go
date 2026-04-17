@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/compose-spec/compose-go/v2/types"
 	"gotest.tools/v3/assert"
 
 	composeapi "github.com/docker/compose/v5/pkg/api"
@@ -68,4 +69,39 @@ services:
 	assert.Equal(t, projects[0].Name, "demo")
 	assert.Equal(t, projects[0].Status, "uncreated(2)")
 	assert.Equal(t, projects[0].ConfigFiles, filepath.Join(projectDir, "compose.yaml"))
+}
+
+func TestParsedProjectContainersUseProjectMetadata(t *testing.T) {
+	project := &types.Project{
+		Name: "demo",
+		Services: types.Services{
+			"web": {
+				Name:         "web",
+				Image:        "nginx:latest",
+				ContainerName: "",
+				CustomLabels: map[string]string{
+					composeapi.ProjectLabel: "demo",
+					composeapi.ServiceLabel: "web",
+				},
+			},
+			"db": {
+				Name:  "db",
+				Image: "postgres:latest",
+			},
+		},
+	}
+
+	containers := parsedProjectContainers(project, []string{"web"})
+
+	assert.Equal(t, len(containers), 1)
+	assert.Equal(t, containers[0].Name, "demo-web-1")
+	assert.Equal(t, containers[0].Project, "demo")
+	assert.Equal(t, containers[0].Service, "web")
+	assert.Equal(t, containers[0].Image, "nginx:latest")
+	assert.Equal(t, containers[0].Status, "uncreated")
+	assert.Equal(t, string(containers[0].State), "uncreated")
+	assert.DeepEqual(t, containers[0].Labels, map[string]string{
+		composeapi.ProjectLabel: "demo",
+		composeapi.ServiceLabel: "web",
+	})
 }
