@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"slices"
@@ -80,6 +81,11 @@ type actionResponse struct {
 	Watching    bool   `json:"watching,omitempty"`
 	WatchURL    string `json:"watchUrl,omitempty"`
 	Message     string `json:"message,omitempty"`
+}
+
+type projectLoadRef struct {
+	workingDir  string
+	configPaths []string
 }
 
 func newServerApp(config serveConfig, backend backendFactory, stats statsRuntimeFactory) *serverApp {
@@ -474,12 +480,13 @@ func (a *serverApp) loadProject(ctx context.Context, requestPath string) (*types
 	if err != nil {
 		return nil, nil, err
 	}
-	root, err := a.resolvePath(requestPath)
+	ref, err := a.resolveProjectLoadRef(requestPath)
 	if err != nil {
 		return nil, nil, err
 	}
 	project, err := backend.LoadProject(ctx, composeapi.ProjectLoadOptions{
-		WorkingDir: root,
+		WorkingDir:  ref.workingDir,
+		ConfigPaths: ref.configPaths,
 		Offline:    true,
 	})
 	if err != nil {
@@ -597,13 +604,51 @@ func mergeLoadedProjects(existing, next *types.Project) *types.Project {
 	return existing
 }
 
-func (a *serverApp) resolvePath(requestPath string) (string, error) {
+func (a *serverApp) resolveProjectLoadRef(requestPath string) (projectLoadRef, error) {
 	root := a.config.rootDir
 	if requestPath == "" {
-		return root, nil
+		return projectLoadRef{workingDir: root}, nil
 	}
+
+	parts := strings.Split(requestPath, ",")
+	resolved := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		path, err := a.resolvePathValue(root, part)
+		if err != nil {
+			return projectLoadRef{}, err
+		}
+		resolved = append(resolved, path)
+	}
+
+	if len(resolved) == 0 {
+		return projectLoadRef{}, errdefs.InvalidParameter(fmt.Errorf("path is required"))
+	}
+
+	if len(resolved) > 1 {
+		return projectLoadRef{
+			workingDir:  filepath.Dir(resolved[0]),
+			configPaths: resolved,
+		}, nil
+	}
+
+	info, err := os.Stat(resolved[0])
+	if err == nil && info.IsDir() {
+		return projectLoadRef{workingDir: resolved[0]}, nil
+	}
+
+	return projectLoadRef{
+		workingDir:  filepath.Dir(resolved[0]),
+		configPaths: resolved,
+	}, nil
+}
+
+func (a *serverApp) resolvePathValue(root, requestPath string) (string, error) {
 	if filepath.IsAbs(requestPath) {
-		return "", errdefs.InvalidParameter(fmt.Errorf("absolute paths are not allowed: %s", requestPath))
+		return filepath.Clean(requestPath), nil
 	}
 	candidate := filepath.Clean(filepath.Join(root, requestPath))
 	rel, err := filepath.Rel(root, candidate)
