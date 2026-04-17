@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/docker/docker/client"
@@ -84,4 +85,41 @@ func TestWrapCORSRejectsDisallowedPreflight(t *testing.T) {
 
 func TestFormatAllowedOriginsDisabled(t *testing.T) {
 	assert.Equal(t, formatAllowedOrigins(nil), "(disabled)")
+}
+
+func TestResolveProjectLoadRefAllowsAbsoluteComposeFile(t *testing.T) {
+	root := t.TempDir()
+	configFile := filepath.Join(root, "demo", "compose.yaml")
+	assert.NilError(t, os.MkdirAll(filepath.Dir(configFile), 0o755))
+	assert.NilError(t, os.WriteFile(configFile, []byte("services: {}\n"), 0o644))
+
+	app := newServerApp(serveConfig{rootDir: root}, nil, nil)
+	ref, err := app.resolveProjectLoadRef(configFile)
+	assert.NilError(t, err)
+	assert.Equal(t, ref.workingDir, filepath.Dir(configFile))
+	assert.DeepEqual(t, ref.configPaths, []string{configFile})
+}
+
+func TestResolveProjectLoadRefAllowsAbsoluteComposeFileList(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "one", "compose.yaml")
+	second := filepath.Join(root, "two", "compose.yaml")
+	assert.NilError(t, os.MkdirAll(filepath.Dir(first), 0o755))
+	assert.NilError(t, os.MkdirAll(filepath.Dir(second), 0o755))
+	assert.NilError(t, os.WriteFile(first, []byte("services: {}\n"), 0o644))
+	assert.NilError(t, os.WriteFile(second, []byte("services: {}\n"), 0o644))
+
+	app := newServerApp(serveConfig{rootDir: root}, nil, nil)
+	ref, err := app.resolveProjectLoadRef(first + "," + second)
+	assert.NilError(t, err)
+	assert.Equal(t, ref.workingDir, filepath.Dir(first))
+	assert.DeepEqual(t, ref.configPaths, []string{first, second})
+}
+
+func TestResolveProjectLoadRefRejectsRelativeEscape(t *testing.T) {
+	root := t.TempDir()
+	app := newServerApp(serveConfig{rootDir: root}, nil, nil)
+
+	_, err := app.resolveProjectLoadRef("../outside")
+	assert.ErrorContains(t, err, "path escapes serve root")
 }
