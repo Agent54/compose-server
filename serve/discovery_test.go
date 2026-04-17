@@ -105,3 +105,27 @@ func TestParsedProjectContainersUseProjectMetadata(t *testing.T) {
 		composeapi.ServiceLabel: "web",
 	})
 }
+
+func TestMergeLoadedProjectsCombinesServicesAndComposeFiles(t *testing.T) {
+	first := &types.Project{
+		Name:         "darc",
+		ComposeFiles: []string{"/tmp/first/compose.yaml"},
+		Services: types.Services{
+			"vscode": {Name: "vscode"},
+		},
+	}
+	second := &types.Project{
+		Name:         "darc",
+		ComposeFiles: []string{"/tmp/second/compose.yaml"},
+		Services: types.Services{
+			"darc": {Name: "darc"},
+		},
+	}
+
+	merged := mergeLoadedProjects(first, second)
+
+	assert.Equal(t, merged.Name, "darc")
+	assert.DeepEqual(t, merged.ComposeFiles, []string{"/tmp/first/compose.yaml", "/tmp/second/compose.yaml"})
+	assert.Assert(t, merged.Services["vscode"].Name == "vscode")
+	assert.Assert(t, merged.Services["darc"].Name == "darc")
+}

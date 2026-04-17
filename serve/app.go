@@ -103,18 +103,13 @@ func (a *serverApp) listStacks(ctx context.Context, options composeapi.ListOptio
 	if err != nil {
 		return nil, err
 	}
-	discovered, err := discoverComposeProjects(ctx, newDiscoveryOptions(a.config), func(ctx context.Context, dir string) (composeapi.Stack, error) {
-		project, err := backend.LoadProject(ctx, composeapi.ProjectLoadOptions{
-			WorkingDir: dir,
-			Offline:    true,
-		})
-		if err != nil {
-			return composeapi.Stack{}, err
-		}
-		return composepkg.StackForLoadedProject(project, "uncreated"), nil
-	})
+	discoveredProjects, err := a.discoverMergedProjects(ctx, backend)
 	if err != nil {
 		return nil, err
+	}
+	discovered := make([]composeapi.Stack, 0, len(discoveredProjects))
+	for _, project := range discoveredProjects {
+		discovered = append(discovered, composepkg.StackForLoadedProject(project, "uncreated"))
 	}
 	stacks := mergeStacks(existing, discovered)
 	watching := a.watches.snapshot()
@@ -393,7 +388,7 @@ func (a *serverApp) resolvePSProject(ctx context.Context, projectName, requestPa
 		return nil, nil, "", errdefs.InvalidParameter(fmt.Errorf("project is required"))
 	}
 
-	project, err := a.findProjectByName(ctx, backend, projectName)
+	project, err := a.findMergedProjectByName(ctx, backend, projectName)
 	if err != nil && !errdefs.IsNotFound(err) {
 		return nil, nil, "", err
 	}
@@ -530,14 +525,14 @@ func (a *serverApp) resolveProject(ctx context.Context, projectName, requestPath
 	if err != nil {
 		return nil, nil, err
 	}
-	project, err := a.findProjectByName(ctx, backend, projectName)
+	project, err := a.findFirstProjectByName(ctx, backend, projectName)
 	if err != nil {
 		return nil, nil, err
 	}
 	return project, backend, nil
 }
 
-func (a *serverApp) findProjectByName(ctx context.Context, backend composeapi.Compose, projectName string) (*types.Project, error) {
+func (a *serverApp) findFirstProjectByName(ctx context.Context, backend composeapi.Compose, projectName string) (*types.Project, error) {
 	dirs, err := findComposeDirectories(newDiscoveryOptions(a.config))
 	if err != nil {
 		return nil, err
@@ -552,6 +547,54 @@ func (a *serverApp) findProjectByName(ctx context.Context, backend composeapi.Co
 		}
 	}
 	return nil, errdefs.NotFound(fmt.Errorf("project %q not found", projectName))
+}
+
+func (a *serverApp) findMergedProjectByName(ctx context.Context, backend composeapi.Compose, projectName string) (*types.Project, error) {
+	projects, err := a.discoverMergedProjects(ctx, backend)
+	if err != nil {
+		return nil, err
+	}
+	project, ok := projects[projectName]
+	if !ok {
+		return nil, errdefs.NotFound(fmt.Errorf("project %q not found", projectName))
+	}
+	return project, nil
+}
+
+func (a *serverApp) discoverMergedProjects(ctx context.Context, backend composeapi.Compose) (map[string]*types.Project, error) {
+	dirs, err := findComposeDirectories(newDiscoveryOptions(a.config))
+	if err != nil {
+		return nil, err
+	}
+
+	projects := map[string]*types.Project{}
+	for _, dir := range dirs {
+		project, err := backend.LoadProject(ctx, composeapi.ProjectLoadOptions{
+			WorkingDir: dir,
+			Offline:    true,
+		})
+		if err != nil {
+			continue
+		}
+		projects[project.Name] = mergeLoadedProjects(projects[project.Name], project)
+	}
+	return projects, nil
+}
+
+func mergeLoadedProjects(existing, next *types.Project) *types.Project {
+	if existing == nil {
+		return next
+	}
+
+	for _, file := range next.ComposeFiles {
+		if !slices.Contains(existing.ComposeFiles, file) {
+			existing.ComposeFiles = append(existing.ComposeFiles, file)
+		}
+	}
+	for name, service := range next.Services {
+		existing.Services[name] = service
+	}
+	return existing
 }
 
 func (a *serverApp) resolvePath(requestPath string) (string, error) {
