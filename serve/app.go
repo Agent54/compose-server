@@ -17,6 +17,7 @@ import (
 	mobyclient "github.com/moby/moby/client"
 
 	composeapi "github.com/docker/compose/v5/pkg/api"
+	composepkg "github.com/docker/compose/v5/pkg/compose"
 )
 
 type backendFactory func() (composeapi.Compose, error)
@@ -99,18 +100,15 @@ func (a *serverApp) listStacks(ctx context.Context, options composeapi.ListOptio
 	if err != nil {
 		return nil, err
 	}
-	discovered, err := discoverComposeProjects(ctx, newDiscoveryOptions(a.config), func(ctx context.Context, dir string) (*discoveredProject, error) {
+	discovered, err := discoverComposeProjects(ctx, newDiscoveryOptions(a.config), func(ctx context.Context, dir string) (composeapi.Stack, error) {
 		project, err := backend.LoadProject(ctx, composeapi.ProjectLoadOptions{
 			WorkingDir: dir,
 			Offline:    true,
 		})
 		if err != nil {
-			return nil, err
+			return composeapi.Stack{}, err
 		}
-		return &discoveredProject{
-			name:        project.Name,
-			configFiles: strings.Join(project.ComposeFiles, ","),
-		}, nil
+		return composepkg.StackForLoadedProject(project, "uncreated"), nil
 	})
 	if err != nil {
 		return nil, err

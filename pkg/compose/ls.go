@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
@@ -55,14 +56,36 @@ func containersToStacks(containers []container.Summary) ([]api.Stack, error) {
 			configFiles = "N/A"
 		}
 
-		projects = append(projects, api.Stack{
-			ID:          project,
-			Name:        project,
-			Status:      combinedStatus(containerToState(containersByLabel[project])),
-			ConfigFiles: configFiles,
-		})
+		projects = append(projects, stackFromMetadata(project, configFiles, combinedStatus(containerToState(containersByLabel[project]))))
 	}
 	return projects, nil
+}
+
+// StackForLoadedProject formats a parsed Compose project the same way `compose ls`
+// formats discovered Docker projects, while letting callers provide their own status.
+func StackForLoadedProject(project *types.Project, status string) api.Stack {
+	return stackFromMetadata(project.Name, strings.Join(project.ComposeFiles, ","), statusWithCount(status, len(project.Services)))
+}
+
+func stackFromMetadata(name, configFiles, status string) api.Stack {
+	return api.Stack{
+		ID:          name,
+		Name:        name,
+		Status:      status,
+		ConfigFiles: configFiles,
+	}
+}
+
+func statusWithCount(status string, count int) string {
+	if count <= 0 {
+		return status
+	}
+
+	statuses := make([]string, count)
+	for i := range statuses {
+		statuses[i] = status
+	}
+	return combinedStatus(statuses)
 }
 
 func combinedConfigFiles(containers []container.Summary) (string, error) {
