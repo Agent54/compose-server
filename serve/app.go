@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/cli/opts"
 	"github.com/docker/docker/api/server/httputils"
+	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/errdefs"
 	mobyclient "github.com/moby/moby/client"
 
@@ -344,7 +347,7 @@ func (a *serverApp) commitProject(ctx context.Context, projectName string, req c
 }
 
 func (a *serverApp) psProject(ctx context.Context, projectName string, path string, services []string, all bool, statuses []string) ([]composeapi.ContainerSummary, error) {
-	project, backend, name, err := a.resolveActionProject(ctx, projectName, path)
+	project, backend, name, err := a.resolvePSProject(ctx, projectName, path)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +357,13 @@ func (a *serverApp) psProject(ctx context.Context, projectName string, path stri
 		Services: services,
 	})
 	if err != nil {
-		return nil, err
+		if project == nil || !errdefs.IsNotFound(err) {
+			return nil, err
+		}
+		containers = nil
+	}
+	if len(containers) == 0 && project != nil {
+		containers = parsedProjectContainers(project, services)
 	}
 	if len(statuses) > 0 {
 		containers = filterByStatus(containers, statuses)
@@ -369,6 +378,29 @@ func (a *serverApp) psProject(ctx context.Context, projectName string, path stri
 		return 0
 	})
 	return containers, nil
+}
+
+func (a *serverApp) resolvePSProject(ctx context.Context, projectName, requestPath string) (*types.Project, composeapi.Compose, string, error) {
+	if requestPath != "" {
+		return a.resolveActionProject(ctx, projectName, requestPath)
+	}
+
+	backend, err := a.backend()
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if projectName == "" {
+		return nil, nil, "", errdefs.InvalidParameter(fmt.Errorf("project is required"))
+	}
+
+	project, err := a.findProjectByName(ctx, backend, projectName)
+	if err != nil && !errdefs.IsNotFound(err) {
+		return nil, nil, "", err
+	}
+	if err != nil {
+		project = nil
+	}
+	return project, backend, projectName, nil
 }
 
 func (a *serverApp) topProject(ctx context.Context, projectName, path string, services []string) ([]composeapi.ContainerProcSummary, error) {
@@ -498,9 +530,17 @@ func (a *serverApp) resolveProject(ctx context.Context, projectName, requestPath
 	if err != nil {
 		return nil, nil, err
 	}
-	dirs, err := findComposeDirectories(newDiscoveryOptions(a.config))
+	project, err := a.findProjectByName(ctx, backend, projectName)
 	if err != nil {
 		return nil, nil, err
+	}
+	return project, backend, nil
+}
+
+func (a *serverApp) findProjectByName(ctx context.Context, backend composeapi.Compose, projectName string) (*types.Project, error) {
+	dirs, err := findComposeDirectories(newDiscoveryOptions(a.config))
+	if err != nil {
+		return nil, err
 	}
 	for _, dir := range dirs {
 		project, err := backend.LoadProject(ctx, composeapi.ProjectLoadOptions{
@@ -508,10 +548,10 @@ func (a *serverApp) resolveProject(ctx context.Context, projectName, requestPath
 			Offline:    true,
 		})
 		if err == nil && project.Name == projectName {
-			return project, backend, nil
+			return project, nil
 		}
 	}
-	return nil, nil, errdefs.NotFound(fmt.Errorf("watch resource %q not found", projectName))
+	return nil, errdefs.NotFound(fmt.Errorf("project %q not found", projectName))
 }
 
 func (a *serverApp) resolvePath(requestPath string) (string, error) {
@@ -550,6 +590,66 @@ func decodeJSONBody(r *http.Request, out any) error {
 
 func writeJSON(w http.ResponseWriter, code int, v any) error {
 	return httputils.WriteJSON(w, code, v)
+}
+
+func parsedProjectContainers(project *types.Project, selectedServices []string) []composeapi.ContainerSummary {
+	summaries := []composeapi.ContainerSummary{}
+	for _, serviceName := range project.ServiceNames() {
+		if len(selectedServices) > 0 && !slices.Contains(selectedServices, serviceName) {
+			continue
+		}
+
+		service := project.Services[serviceName]
+		name := parsedProjectContainerName(project.Name, service, 1)
+		summaries = append(summaries, composeapi.ContainerSummary{
+			Name:       name,
+			Names:      []string{name},
+			Image:      composeapi.GetImageNameOrDefault(service, project.Name),
+			Command:    parsedProjectCommand(service),
+			Project:    project.Name,
+			Service:    service.Name,
+			State:      containertypes.ContainerState("uncreated"),
+			Status:     "uncreated",
+			Publishers: parsedProjectPublishers(service),
+			Labels:     service.CustomLabels,
+		})
+	}
+	return summaries
+}
+
+func parsedProjectContainerName(projectName string, service types.ServiceConfig, index int) string {
+	if service.ContainerName != "" {
+		return service.ContainerName
+	}
+	return strings.Join([]string{projectName, service.Name, strconv.Itoa(index)}, composeapi.Separator)
+}
+
+func parsedProjectCommand(service types.ServiceConfig) string {
+	if len(service.Command) == 0 {
+		return ""
+	}
+	return service.Command.String()
+}
+
+func parsedProjectPublishers(service types.ServiceConfig) composeapi.PortPublishers {
+	publishers := composeapi.PortPublishers{}
+	for _, port := range service.Ports {
+		published := 0
+		if port.Published != "" {
+			if value, err := strconv.Atoi(port.Published); err == nil {
+				published = value
+			}
+		}
+
+		publishers = append(publishers, composeapi.PortPublisher{
+			URL:           port.HostIP,
+			TargetPort:    int(port.Target),
+			PublishedPort: published,
+			Protocol:      port.Protocol,
+		})
+	}
+	sort.Sort(publishers)
+	return publishers
 }
 
 func (a *serverApp) actionResult(project *types.Project, name string, watching bool, message string) actionResponse {
