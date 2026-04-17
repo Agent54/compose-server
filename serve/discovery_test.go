@@ -1,11 +1,15 @@
 package serve
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"gotest.tools/v3/assert"
+
+	composeapi "github.com/docker/compose/v5/pkg/api"
+	composepkg "github.com/docker/compose/v5/pkg/compose"
 )
 
 func TestFindComposeDirectoriesHonorsDepthAndExclusions(t *testing.T) {
@@ -28,4 +32,40 @@ func TestFindComposeDirectoriesHonorsDepthAndExclusions(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, len(dirs), 1)
 	assert.Equal(t, dirs[0], filepath.Join(root, "a"))
+}
+
+func TestDiscoverComposeProjectsUsesParsedServiceCountForStatus(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "demo")
+	assert.NilError(t, os.MkdirAll(projectDir, 0o755))
+	assert.NilError(t, os.WriteFile(filepath.Join(projectDir, "compose.yaml"), []byte(`
+services:
+  web:
+    image: nginx:latest
+  db:
+    image: postgres:latest
+`), 0o644))
+
+	service, err := composepkg.NewComposeService(nil)
+	assert.NilError(t, err)
+
+	projects, err := discoverComposeProjects(t.Context(), discoveryOptions{
+		rootDir:     root,
+		maxDepth:    2,
+		excludedDir: defaultExcludedDirs,
+	}, func(ctx context.Context, dir string) (composeapi.Stack, error) {
+		project, err := service.LoadProject(ctx, composeapi.ProjectLoadOptions{
+			WorkingDir: dir,
+			Offline:    true,
+		})
+		if err != nil {
+			return composeapi.Stack{}, err
+		}
+		return composepkg.StackForLoadedProject(project, "uncreated"), nil
+	})
+	assert.NilError(t, err)
+	assert.Equal(t, len(projects), 1)
+	assert.Equal(t, projects[0].Name, "demo")
+	assert.Equal(t, projects[0].Status, "uncreated(2)")
+	assert.Equal(t, projects[0].ConfigFiles, filepath.Join(projectDir, "compose.yaml"))
 }

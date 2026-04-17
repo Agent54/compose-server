@@ -22,12 +22,7 @@ type discoveryOptions struct {
 	excludedDir []string
 }
 
-type projectLoaderFn func(context.Context, string) (*discoveredProject, error)
-
-type discoveredProject struct {
-	name        string
-	configFiles string
-}
+type projectLoaderFn func(context.Context, string) (composeapi.Stack, error)
 
 func discoverComposeProjects(ctx context.Context, options discoveryOptions, load projectLoaderFn) ([]composeapi.Stack, error) {
 	dirs, err := findComposeDirectories(options)
@@ -41,12 +36,7 @@ func discoverComposeProjects(ctx context.Context, options discoveryOptions, load
 		if err != nil {
 			continue
 		}
-		projects = append(projects, composeapi.Stack{
-			ID:          project.name,
-			Name:        project.name,
-			Status:      "uncreated",
-			ConfigFiles: project.configFiles,
-		})
+		projects = append(projects, project)
 	}
 	return projects, nil
 }

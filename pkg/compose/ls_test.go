@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/moby/moby/api/types/container"
 	"gotest.tools/v3/assert"
 
@@ -66,6 +67,26 @@ func TestStacksMixedStatus(t *testing.T) {
 	assert.Equal(t, combinedStatus([]string{"running"}), "running(1)")
 	assert.Equal(t, combinedStatus([]string{"running", "running", "running"}), "running(3)")
 	assert.Equal(t, combinedStatus([]string{"running", "exited", "running"}), "exited(1), running(2)")
+}
+
+func TestStackForLoadedProject(t *testing.T) {
+	project := &types.Project{
+		Name:         "project1",
+		ComposeFiles: []string{"/home/docker-compose.yaml"},
+		Services: types.Services{
+			"web": {Name: "web"},
+			"db":  {Name: "db"},
+		},
+	}
+
+	stack := StackForLoadedProject(project, "uncreated")
+
+	assert.DeepEqual(t, stack, api.Stack{
+		ID:          "project1",
+		Name:        "project1",
+		Status:      "uncreated(2)",
+		ConfigFiles: "/home/docker-compose.yaml",
+	})
 }
 
 func TestCombinedConfigFiles(t *testing.T) {
