@@ -15,8 +15,8 @@ import (
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/cli/opts"
 	"github.com/docker/docker/api/server/httputils"
-	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/errdefs"
+	containertypes "github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
 
 	composeapi "github.com/docker/compose/v5/pkg/api"
@@ -628,7 +628,7 @@ func parsedProjectCommand(service types.ServiceConfig) string {
 	if len(service.Command) == 0 {
 		return ""
 	}
-	return service.Command.String()
+	return strings.Join([]string(service.Command), " ")
 }
 
 func parsedProjectPublishers(service types.ServiceConfig) composeapi.PortPublishers {
