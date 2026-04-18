@@ -148,6 +148,17 @@ func (r *composeRouter) streamBuild(ctx context.Context, w http.ResponseWriter, 
 	return r.app.streamBuild(ctx, vars["build"], w)
 }
 
+func (r *composeRouter) configProject(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
+	if err := httputils.ParseForm(req); err != nil {
+		return err
+	}
+	content, contentType, err := r.app.renderProjectConfig(ctx, vars["project"], req.Form.Get("path"), req.Form.Get("format"))
+	if err != nil {
+		return err
+	}
+	return writeContent(w, http.StatusOK, contentType, content)
+}
+
 func (r *composeRouter) startProject(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
 	var body projectActionRequest
 	if err := decodeJSONBody(req, &body); err != nil {
@@ -407,6 +418,16 @@ func serveRoutes() []routeSpec {
 			path:    "/builds/{build}/stream",
 			summary: "Replay and follow a build's in-memory output as SSE",
 			handler: func(r *composeRouter) httputils.APIFunc { return r.streamBuild },
+		},
+		{
+			method:  http.MethodGet,
+			path:    "/config/{project}",
+			summary: "Render the parsed Compose project config as YAML or JSON",
+			queryParams: []queryParamSpec{
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
+				{Name: "format", Type: "string", Values: []string{"yaml", "json"}, Description: "Output format; defaults to yaml"},
+			},
+			handler: func(r *composeRouter) httputils.APIFunc { return r.configProject },
 		},
 		{
 			method:  http.MethodPost,
