@@ -208,6 +208,30 @@ func (a *serverApp) streamBuild(ctx context.Context, buildID string, w http.Resp
 	return a.builds.stream(ctx, buildID, w)
 }
 
+func (a *serverApp) renderProjectConfig(ctx context.Context, projectName, requestPath, format string) ([]byte, string, error) {
+	project, _, err := a.resolveProject(ctx, projectName, requestPath)
+	if err != nil {
+		return nil, "", err
+	}
+
+	switch format {
+	case "", "yaml":
+		content, err := project.MarshalYAML()
+		if err != nil {
+			return nil, "", err
+		}
+		return content, "application/yaml", nil
+	case "json":
+		content, err := project.MarshalJSON()
+		if err != nil {
+			return nil, "", err
+		}
+		return content, "application/json", nil
+	default:
+		return nil, "", errdefs.InvalidParameter(fmt.Errorf("unsupported format %q", format))
+	}
+}
+
 func (a *serverApp) restartWatch(ctx context.Context, projectName string, req watchRequest) (actionResponse, error) {
 	project, _, err := a.resolveProject(ctx, projectName, req.Path)
 	if err != nil {
@@ -718,6 +742,15 @@ func decodeJSONBody(r *http.Request, out any) error {
 
 func writeJSON(w http.ResponseWriter, code int, v any) error {
 	return httputils.WriteJSON(w, code, v)
+}
+
+func writeContent(w http.ResponseWriter, code int, contentType string, content []byte) error {
+	if contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	w.WriteHeader(code)
+	_, err := w.Write(content)
+	return err
 }
 
 func parsedProjectContainers(project *types.Project, selectedServices []string) []composeapi.ContainerSummary {
