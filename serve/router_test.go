@@ -120,6 +120,8 @@ func TestRootReturnsSchemaFromRouteDefinitions(t *testing.T) {
 	assert.Assert(t, hasRoute(schema.Routes, http.MethodPost, "/start/{project}"))
 	assert.Assert(t, hasRoute(schema.Routes, http.MethodGet, "/events/{project}"))
 	assert.Assert(t, hasRoute(schema.Routes, http.MethodGet, "/stats/{project}"))
+	assert.Assert(t, hasRoute(schema.Routes, http.MethodGet, "/builds"))
+	assert.Assert(t, hasRoute(schema.Routes, http.MethodGet, "/builds/{build}/stream"))
 	assert.Assert(t, hasRoute(schema.Routes, http.MethodPost, "/pause/{project}"))
 }
 
