@@ -140,6 +140,14 @@ func (r *composeRouter) upProject(ctx context.Context, w http.ResponseWriter, re
 	return writeJSON(w, http.StatusOK, resp)
 }
 
+func (r *composeRouter) listBuilds(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
+	return writeJSON(w, http.StatusOK, r.app.listBuilds())
+}
+
+func (r *composeRouter) streamBuild(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
+	return r.app.streamBuild(ctx, vars["build"], w)
+}
+
 func (r *composeRouter) startProject(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
 	var body projectActionRequest
 	if err := decodeJSONBody(req, &body); err != nil {
@@ -382,18 +390,30 @@ func serveRoutes() []routeSpec {
 			path:    "/up",
 			summary: "Start a Compose project; optional watch mode starts a per-project watch resource",
 			bodyFields: []bodyFieldSpec{
-				{Name: "path", Type: "string", Description: "Path relative to the serve root"},
+				{Name: "path", Type: "string", Description: "Project directory, compose file path, or comma-separated compose file list; relative paths are resolved from the serve root"},
 				{Name: "build", Type: "boolean", Description: "Build before starting"},
 				{Name: "watch", Type: "boolean", Description: "Start watch mode after up succeeds"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.upProject },
 		},
 		{
+			method:  http.MethodGet,
+			path:    "/builds",
+			summary: "List builds seen by this compose serve process, newest first",
+			handler: func(r *composeRouter) httputils.APIFunc { return r.listBuilds },
+		},
+		{
+			method:  http.MethodGet,
+			path:    "/builds/{build}/stream",
+			summary: "Replay and follow a build's in-memory output as SSE",
+			handler: func(r *composeRouter) httputils.APIFunc { return r.streamBuild },
+		},
+		{
 			method:  http.MethodPost,
 			path:    "/start/{project}",
 			summary: "Start services for a project",
 			bodyFields: []bodyFieldSpec{
-				{Name: "path", Type: "string", Description: "Optional project path relative to the serve root"},
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 				{Name: "services", Type: "string[]", Description: "Optional service names"},
 				{Name: "wait", Type: "boolean", Description: "Wait for services to become running or healthy"},
 				{Name: "waitTimeoutSeconds", Type: "integer", Description: "Maximum wait duration in seconds"},
@@ -405,7 +425,7 @@ func serveRoutes() []routeSpec {
 			path:    "/stop/{project}",
 			summary: "Stop services for a project",
 			bodyFields: []bodyFieldSpec{
-				{Name: "path", Type: "string", Description: "Optional project path relative to the serve root"},
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 				{Name: "services", Type: "string[]", Description: "Optional service names"},
 				{Name: "timeoutSeconds", Type: "integer", Description: "Graceful shutdown timeout in seconds"},
 			},
@@ -416,7 +436,7 @@ func serveRoutes() []routeSpec {
 			path:    "/restart/{project}",
 			summary: "Restart services for a project",
 			bodyFields: []bodyFieldSpec{
-				{Name: "path", Type: "string", Description: "Optional project path relative to the serve root"},
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 				{Name: "services", Type: "string[]", Description: "Optional service names"},
 				{Name: "timeoutSeconds", Type: "integer", Description: "Graceful shutdown timeout in seconds"},
 				{Name: "noDeps", Type: "boolean", Description: "Skip dependent services"},
@@ -428,7 +448,7 @@ func serveRoutes() []routeSpec {
 			path:    "/down/{project}",
 			summary: "Stop and remove a project",
 			bodyFields: []bodyFieldSpec{
-				{Name: "path", Type: "string", Description: "Optional project path relative to the serve root"},
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 				{Name: "services", Type: "string[]", Description: "Optional service names"},
 				{Name: "timeoutSeconds", Type: "integer", Description: "Graceful shutdown timeout in seconds"},
 				{Name: "removeOrphans", Type: "boolean", Description: "Remove orphan containers"},
@@ -442,7 +462,7 @@ func serveRoutes() []routeSpec {
 			path:    "/pause/{project}",
 			summary: "Pause services by freezing their processes in place; unlike stop, containers remain running but suspended",
 			bodyFields: []bodyFieldSpec{
-				{Name: "path", Type: "string", Description: "Optional project path relative to the serve root"},
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 				{Name: "services", Type: "string[]", Description: "Optional service names"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.pauseProject },
@@ -452,7 +472,7 @@ func serveRoutes() []routeSpec {
 			path:    "/unpause/{project}",
 			summary: "Resume previously paused services",
 			bodyFields: []bodyFieldSpec{
-				{Name: "path", Type: "string", Description: "Optional project path relative to the serve root"},
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 				{Name: "services", Type: "string[]", Description: "Optional service names"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.unpauseProject },
@@ -462,7 +482,7 @@ func serveRoutes() []routeSpec {
 			path:    "/kill/{project}",
 			summary: "Force-stop services by sending a signal",
 			bodyFields: []bodyFieldSpec{
-				{Name: "path", Type: "string", Description: "Optional project path relative to the serve root"},
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 				{Name: "services", Type: "string[]", Description: "Optional service names"},
 				{Name: "removeOrphans", Type: "boolean", Description: "Remove orphan containers"},
 				{Name: "signal", Type: "string", Description: "Signal to send, for example SIGKILL"},
@@ -474,7 +494,7 @@ func serveRoutes() []routeSpec {
 			path:    "/commit/{project}",
 			summary: "Create an image from a service container",
 			bodyFields: []bodyFieldSpec{
-				{Name: "path", Type: "string", Description: "Optional project path relative to the serve root"},
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 				{Name: "service", Type: "string", Description: "Service name to commit"},
 				{Name: "reference", Type: "string", Description: "Target image reference"},
 				{Name: "pause", Type: "boolean", Description: "Pause the container during commit"},
@@ -490,7 +510,7 @@ func serveRoutes() []routeSpec {
 			path:    "/ps/{project}",
 			summary: "List project containers as JSON",
 			queryParams: []queryParamSpec{
-				{Name: "path", Type: "string", Description: "Optional project path relative to the serve root"},
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 				{Name: "service", Type: "string", Repeated: true, Description: "Optional service names"},
 				{Name: "all", Type: "boolean", Description: "Include stopped containers"},
 				{Name: "status", Type: "string", Repeated: true, Description: "Filter by container state"},
@@ -502,7 +522,7 @@ func serveRoutes() []routeSpec {
 			path:    "/top/{project}",
 			summary: "Return running process information for project containers",
 			queryParams: []queryParamSpec{
-				{Name: "path", Type: "string", Description: "Optional project path relative to the serve root"},
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 				{Name: "service", Type: "string", Repeated: true, Description: "Optional service names"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.topProject },
@@ -512,7 +532,7 @@ func serveRoutes() []routeSpec {
 			path:    "/volumes/{project}",
 			summary: "List project volumes as JSON",
 			queryParams: []queryParamSpec{
-				{Name: "path", Type: "string", Description: "Optional project path relative to the serve root"},
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 				{Name: "service", Type: "string", Repeated: true, Description: "Optional service names"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.volumesProject },
@@ -522,7 +542,7 @@ func serveRoutes() []routeSpec {
 			path:    "/events/{project}",
 			summary: "Stream project events over SSE using the same plain or JSON rendering as the CLI events command",
 			queryParams: []queryParamSpec{
-				{Name: "path", Type: "string", Description: "Optional project path relative to the serve root"},
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 				{Name: "service", Type: "string", Repeated: true, Description: "Optional service names"},
 				{Name: "since", Type: "string", Description: "Show events since this timestamp"},
 				{Name: "until", Type: "string", Description: "Stop streaming at this timestamp"},
@@ -535,7 +555,7 @@ func serveRoutes() []routeSpec {
 			path:    "/stats/{project}",
 			summary: "Stream project container statistics over SSE",
 			queryParams: []queryParamSpec{
-				{Name: "path", Type: "string", Description: "Optional project path relative to the serve root"},
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 				{Name: "service", Type: "string", Repeated: true, Description: "Optional service names"},
 				{Name: "all", Type: "boolean", Description: "Include stopped containers"},
 				{Name: "no-stream", Type: "boolean", Description: "Send one frame and close"},
@@ -555,7 +575,7 @@ func serveRoutes() []routeSpec {
 			path:    "/watch/{project}",
 			summary: "Start or restart a watch resource for an already upped project",
 			bodyFields: []bodyFieldSpec{
-				{Name: "path", Type: "string", Description: "Optional project path relative to the serve root"},
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.postWatch },
 		},

@@ -24,7 +24,7 @@ import (
 	composepkg "github.com/docker/compose/v5/pkg/compose"
 )
 
-type backendFactory func() (composeapi.Compose, error)
+type backendFactory func(...composepkg.Option) (composeapi.Compose, error)
 type statsRuntimeFactory func() (statsRuntime, error)
 
 type statsRuntime struct {
@@ -37,6 +37,7 @@ type serverApp struct {
 	backend      backendFactory
 	stats        statsRuntimeFactory
 	watches      *watchRegistry
+	builds       *buildRegistry
 	listOverride func(context.Context, composeapi.ListOptions) ([]composeapi.Stack, error)
 }
 
@@ -80,6 +81,8 @@ type actionResponse struct {
 	ConfigFiles string `json:"configFiles,omitempty"`
 	Watching    bool   `json:"watching,omitempty"`
 	WatchURL    string `json:"watchUrl,omitempty"`
+	BuildID     string `json:"buildId,omitempty"`
+	BuildURL    string `json:"buildUrl,omitempty"`
 	Message     string `json:"message,omitempty"`
 }
 
@@ -94,6 +97,7 @@ func newServerApp(config serveConfig, backend backendFactory, stats statsRuntime
 		backend: backend,
 		stats:   stats,
 		watches: newWatchRegistry(),
+		builds:  newBuildRegistry(),
 	}
 }
 
@@ -126,7 +130,7 @@ func (a *serverApp) listStacks(ctx context.Context, options composeapi.ListOptio
 }
 
 func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionResponse, error) {
-	project, backend, err := a.loadProject(ctx, req.Path)
+	project, _, err := a.loadProject(ctx, req.Path)
 	if err != nil {
 		return actionResponse{}, err
 	}
@@ -137,7 +141,29 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 		buildPtr = &buildCopy
 	}
 
-	if err := backend.Up(ctx, project, composeapi.UpOptions{
+	var (
+		backend composeapi.Compose
+		buildID string
+	)
+	if buildPtr != nil {
+		buildID = a.builds.start(project.Name)
+		backend, err = a.backend(
+			composepkg.WithEventProcessor(a.builds.processor(buildID, project.Name)),
+			composepkg.WithOutputStream(a.builds.writer(buildID, project.Name, "stdout")),
+			composepkg.WithErrorStream(a.builds.writer(buildID, project.Name, "stderr")),
+		)
+		if err != nil {
+			a.builds.finish(buildID, false)
+			return actionResponse{}, err
+		}
+	} else {
+		backend, err = a.backend()
+		if err != nil {
+			return actionResponse{}, err
+		}
+	}
+
+	err = backend.Up(ctx, project, composeapi.UpOptions{
 		Create: composeapi.CreateOptions{
 			Build:                buildPtr,
 			Services:             project.ServiceNames(),
@@ -149,7 +175,11 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 			Project:  project,
 			Services: project.ServiceNames(),
 		},
-	}); err != nil {
+	})
+	if buildID != "" {
+		a.builds.finish(buildID, err == nil)
+	}
+	if err != nil {
 		return actionResponse{}, err
 	}
 
@@ -165,7 +195,17 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 		ConfigFiles: strings.Join(project.ComposeFiles, ","),
 		Watching:    req.Watch,
 		WatchURL:    watchURL(project.Name, req.Watch),
+		BuildID:     buildID,
+		BuildURL:    buildURL(buildID),
 	}, nil
+}
+
+func (a *serverApp) listBuilds() []buildSummary {
+	return a.builds.list()
+}
+
+func (a *serverApp) streamBuild(ctx context.Context, buildID string, w http.ResponseWriter) error {
+	return a.builds.stream(ctx, buildID, w)
 }
 
 func (a *serverApp) restartWatch(ctx context.Context, projectName string, req watchRequest) (actionResponse, error) {
@@ -797,6 +837,13 @@ func watchURL(project string, enabled bool) string {
 		return ""
 	}
 	return "/watch/" + project
+}
+
+func buildURL(buildID string) string {
+	if buildID == "" {
+		return ""
+	}
+	return "/builds/" + buildID + "/stream"
 }
 
 type sseMessage struct {

@@ -65,8 +65,9 @@ func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.C
 				return err
 			}
 
-			srv, err := newHTTPServer(target, cfg, func() (composeapi.Compose, error) {
+			srv, err := newHTTPServer(target, cfg, func(extraOpts ...composepkg.Option) (composeapi.Compose, error) {
 				opts := append(slices.Clone(backendOpts), composepkg.WithEventProcessor(noopEventProcessor{}))
+				opts = append(opts, extraOpts...)
 				return composepkg.NewComposeService(dockerCli, opts...)
 			}, func() (statsRuntime, error) {
 				return statsRuntime{
