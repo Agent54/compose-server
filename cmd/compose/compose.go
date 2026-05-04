@@ -51,7 +51,7 @@ import (
 	"github.com/docker/compose/v5/pkg/compose"
 	"github.com/docker/compose/v5/pkg/remote"
 	"github.com/docker/compose/v5/pkg/utils"
-	servecmd "github.com/docker/compose/v5/serve"
+	servercmd "github.com/docker/compose/v5/server"
 )
 
 const (
@@ -618,7 +618,7 @@ func RootCommand(dockerCli command.Cli, backendOptions *BackendOptions) *cobra.C
 		publishCommand(&opts, dockerCli, backendOptions),
 		alphaCommand(&opts, dockerCli, backendOptions),
 		bridgeCommand(&opts, dockerCli),
-		servecmd.NewCommand(dockerCli, backendOptions.Options),
+		servercmd.NewCommand(dockerCli, backendOptions.Options),
 		volumesCommand(&opts, dockerCli, backendOptions),
 	)
 
