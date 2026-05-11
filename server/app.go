@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	composecli "github.com/compose-spec/compose-go/v2/cli"
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/cli/opts"
 	"github.com/docker/docker/api/server/httputils"
@@ -589,9 +590,10 @@ func (a *serverApp) loadProject(ctx context.Context, requestPath string) (*types
 		return nil, nil, err
 	}
 	project, err := backend.LoadProject(ctx, composeapi.ProjectLoadOptions{
-		WorkingDir:  ref.workingDir,
-		ConfigPaths: ref.configPaths,
-		Offline:    true,
+		WorkingDir:        ref.workingDir,
+		ConfigPaths:       ref.configPaths,
+		Offline:           true,
+		ProjectOptionsFns: runtimeProjectLoadOptions(),
 	})
 	if err != nil {
 		return nil, nil, err
@@ -772,10 +774,15 @@ func (a *serverApp) findFirstProjectByName(ctx context.Context, backend composea
 	}
 	for _, dir := range dirs {
 		project, err := backend.LoadProject(ctx, composeapi.ProjectLoadOptions{
-			WorkingDir: dir,
-			Offline:    true,
+			WorkingDir:        dir,
+			Offline:           true,
+			ProjectOptionsFns: runtimeProjectLoadOptions(),
 		})
 		if err == nil && project.Name == projectName {
+			project, err = runtimeProject(project)
+			if err != nil {
+				return nil, err
+			}
 			return project, nil
 		}
 	}
@@ -792,8 +799,9 @@ func (a *serverApp) findProjectVariantsByName(ctx context.Context, backend compo
 	seen := map[string]struct{}{}
 	for _, dir := range dirs {
 		project, err := backend.LoadProject(ctx, composeapi.ProjectLoadOptions{
-			WorkingDir: dir,
-			Offline:    true,
+			WorkingDir:        dir,
+			Offline:           true,
+			ProjectOptionsFns: runtimeProjectLoadOptions(),
 		})
 		if err != nil || project.Name != projectName {
 			continue
@@ -836,11 +844,16 @@ func (a *serverApp) discoverMergedProjects(ctx context.Context, backend composea
 	projects := map[string]*types.Project{}
 	for _, dir := range dirs {
 		project, err := backend.LoadProject(ctx, composeapi.ProjectLoadOptions{
-			WorkingDir: dir,
-			Offline:    true,
+			WorkingDir:        dir,
+			Offline:           true,
+			ProjectOptionsFns: runtimeProjectLoadOptions(),
 		})
 		if err != nil {
 			continue
+		}
+		project, err = runtimeProject(project)
+		if err != nil {
+			return nil, err
 		}
 		projects[project.Name] = mergeLoadedProjects(projects[project.Name], project)
 	}
@@ -992,6 +1005,10 @@ func prepareProjectForWatch(project *types.Project) {
 
 func runtimeProject(project *types.Project) (*types.Project, error) {
 	return project.WithServicesEnvironmentResolved(true)
+}
+
+func runtimeProjectLoadOptions() []composecli.ProjectOptionsFn {
+	return []composecli.ProjectOptionsFn{composecli.WithoutEnvironmentResolution}
 }
 
 func watchModeUpOptions(project *types.Project, build composeapi.BuildOptions, consumer composeapi.LogConsumer) composeapi.UpOptions {
