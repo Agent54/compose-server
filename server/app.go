@@ -145,6 +145,19 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 		buildPtr = &buildCopy
 	}
 
+	if req.Watch {
+		if err := a.startWatch(project, build); err != nil {
+			return actionResponse{}, err
+		}
+		return actionResponse{
+			OK:          true,
+			Project:     project.Name,
+			ConfigFiles: strings.Join(project.ComposeFiles, ","),
+			Watching:    true,
+			WatchURL:    watchURL(project.Name, true),
+		}, nil
+	}
+
 	var (
 		backend composeapi.Compose
 		buildID string
@@ -185,12 +198,6 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 	}
 	if err != nil {
 		return actionResponse{}, err
-	}
-
-	if req.Watch {
-		if err := a.startWatch(project, build, false); err != nil {
-			return actionResponse{}, err
-		}
 	}
 
 	return actionResponse{
@@ -242,7 +249,7 @@ func (a *serverApp) restartWatch(ctx context.Context, projectName string, req wa
 		return actionResponse{}, err
 	}
 	prepareProjectForWatch(project)
-	if err := a.startWatch(project, a.newBuildOptions(project), true); err != nil {
+	if err := a.startWatch(project, a.newBuildOptions(project)); err != nil {
 		return actionResponse{}, err
 	}
 	return actionResponse{
@@ -529,7 +536,7 @@ func (a *serverApp) streamWatch(ctx context.Context, projectName string, w http.
 	return a.watches.stream(ctx, projectName, w)
 }
 
-func (a *serverApp) startWatch(project *types.Project, build composeapi.BuildOptions, refresh bool) error {
+func (a *serverApp) startWatch(project *types.Project, build composeapi.BuildOptions) error {
 	return a.watches.start(project.Name, func(ctx context.Context, consumer composeapi.LogConsumer) error {
 		backend, err := a.backend(
 			composepkg.WithOutputStream(newLogConsumerWriter(consumer, "stdout")),
@@ -538,18 +545,7 @@ func (a *serverApp) startWatch(project *types.Project, build composeapi.BuildOpt
 		if err != nil {
 			return err
 		}
-		if refresh {
-			consumer.Status(composeapi.ResourceCompose, "Refreshing services before watch")
-			if err := backend.Up(ctx, project, watchUpOptions(project, build)); err != nil {
-				return err
-			}
-		}
-		return backend.Watch(ctx, project, composeapi.WatchOptions{
-			Build:    &build,
-			LogTo:    consumer,
-			Prune:    true,
-			Services: project.ServiceNames(),
-		})
+		return backend.Up(ctx, project, watchModeUpOptions(project, build, consumer))
 	})
 }
 
@@ -567,6 +563,10 @@ func (a *serverApp) loadProject(ctx context.Context, requestPath string) (*types
 		ConfigPaths: ref.configPaths,
 		Offline:    true,
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	project, err = runtimeProject(project)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -611,6 +611,10 @@ func (a *serverApp) resolveProject(ctx context.Context, projectName, requestPath
 		return nil, nil, err
 	}
 	project, err := a.findMergedProjectByName(ctx, backend, projectName)
+	if err != nil {
+		return nil, nil, err
+	}
+	project, err = runtimeProject(project)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -756,7 +760,11 @@ func prepareProjectForWatch(project *types.Project) {
 	}
 }
 
-func watchUpOptions(project *types.Project, build composeapi.BuildOptions) composeapi.UpOptions {
+func runtimeProject(project *types.Project) (*types.Project, error) {
+	return project.WithServicesEnvironmentResolved(true)
+}
+
+func watchModeUpOptions(project *types.Project, build composeapi.BuildOptions, consumer composeapi.LogConsumer) composeapi.UpOptions {
 	buildCopy := build
 	return composeapi.UpOptions{
 		Create: composeapi.CreateOptions{
@@ -768,6 +776,9 @@ func watchUpOptions(project *types.Project, build composeapi.BuildOptions) compo
 		},
 		Start: composeapi.StartOptions{
 			Project:  project,
+			Attach:   consumer,
+			AttachTo: project.ServiceNames(),
+			Watch:    true,
 			Services: project.ServiceNames(),
 		},
 	}
