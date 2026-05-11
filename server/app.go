@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -134,6 +135,9 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 	if err != nil {
 		return actionResponse{}, err
 	}
+	if req.Watch {
+		prepareProjectForWatch(project)
+	}
 	build := a.newBuildOptions(project)
 	var buildPtr *composeapi.BuildOptions
 	if req.Build || req.Watch {
@@ -184,7 +188,7 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 	}
 
 	if req.Watch {
-		if err := a.startWatch(project, build); err != nil {
+		if err := a.startWatch(project, build, false); err != nil {
 			return actionResponse{}, err
 		}
 	}
@@ -237,7 +241,8 @@ func (a *serverApp) restartWatch(ctx context.Context, projectName string, req wa
 	if err != nil {
 		return actionResponse{}, err
 	}
-	if err := a.startWatch(project, a.newBuildOptions(project)); err != nil {
+	prepareProjectForWatch(project)
+	if err := a.startWatch(project, a.newBuildOptions(project), true); err != nil {
 		return actionResponse{}, err
 	}
 	return actionResponse{
@@ -524,11 +529,20 @@ func (a *serverApp) streamWatch(ctx context.Context, projectName string, w http.
 	return a.watches.stream(ctx, projectName, w)
 }
 
-func (a *serverApp) startWatch(project *types.Project, build composeapi.BuildOptions) error {
+func (a *serverApp) startWatch(project *types.Project, build composeapi.BuildOptions, refresh bool) error {
 	return a.watches.start(project.Name, func(ctx context.Context, consumer composeapi.LogConsumer) error {
-		backend, err := a.backend()
+		backend, err := a.backend(
+			composepkg.WithOutputStream(newLogConsumerWriter(consumer, "stdout")),
+			composepkg.WithErrorStream(newLogConsumerWriter(consumer, "stderr")),
+		)
 		if err != nil {
 			return err
+		}
+		if refresh {
+			consumer.Status(composeapi.ResourceCompose, "Refreshing services before watch")
+			if err := backend.Up(ctx, project, watchUpOptions(project, build)); err != nil {
+				return err
+			}
 		}
 		return backend.Watch(ctx, project, composeapi.WatchOptions{
 			Build:    &build,
@@ -596,7 +610,7 @@ func (a *serverApp) resolveProject(ctx context.Context, projectName, requestPath
 	if err != nil {
 		return nil, nil, err
 	}
-	project, err := a.findFirstProjectByName(ctx, backend, projectName)
+	project, err := a.findMergedProjectByName(ctx, backend, projectName)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -731,6 +745,69 @@ func (a *serverApp) newBuildOptions(project *types.Project) composeapi.BuildOpti
 		Services: project.ServiceNames(),
 		Deps:     true,
 	}
+}
+
+func prepareProjectForWatch(project *types.Project) {
+	for index, service := range project.Services {
+		if service.Build != nil && service.Develop != nil {
+			service.PullPolicy = types.PullPolicyBuild
+		}
+		project.Services[index] = service
+	}
+}
+
+func watchUpOptions(project *types.Project, build composeapi.BuildOptions) composeapi.UpOptions {
+	buildCopy := build
+	return composeapi.UpOptions{
+		Create: composeapi.CreateOptions{
+			Build:                &buildCopy,
+			Services:             project.ServiceNames(),
+			Recreate:             composeapi.RecreateDiverged,
+			RecreateDependencies: composeapi.RecreateNever,
+			Inherit:              true,
+		},
+		Start: composeapi.StartOptions{
+			Project:  project,
+			Services: project.ServiceNames(),
+		},
+	}
+}
+
+type logConsumerWriter struct {
+	consumer composeapi.LogConsumer
+	stream   string
+	mu       sync.Mutex
+	pending  string
+}
+
+func newLogConsumerWriter(consumer composeapi.LogConsumer, stream string) *logConsumerWriter {
+	return &logConsumerWriter{
+		consumer: consumer,
+		stream:   stream,
+	}
+}
+
+func (w *logConsumerWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.pending += strings.ReplaceAll(strings.ReplaceAll(string(p), "\r\n", "\n"), "\r", "\n")
+	for {
+		line, rest, ok := strings.Cut(w.pending, "\n")
+		if !ok {
+			break
+		}
+		w.pending = rest
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if w.stream == "stderr" {
+			w.consumer.Err(composeapi.ResourceCompose, line)
+		} else {
+			w.consumer.Log(composeapi.ResourceCompose, line)
+		}
+	}
+	return len(p), nil
 }
 
 func decodeJSONBody(r *http.Request, out any) error {
