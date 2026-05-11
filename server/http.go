@@ -8,11 +8,14 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 )
 
 type httpServer struct {
 	target serveTarget
 	server *http.Server
+	app    *serverApp
+	statusf func(string, ...any)
 }
 
 func (s *httpServer) run(ctx context.Context) error {
@@ -43,12 +46,34 @@ func (s *httpServer) run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		shutdownErr := s.server.Shutdown(context.Background())
+		if s.statusf != nil {
+			s.statusf("Shutdown requested, stopping active resources...\n")
+		}
+		if s.app != nil {
+			s.app.shutdown(s.statusf)
+		}
+		if s.statusf != nil {
+			s.statusf("Waiting for HTTP server to shut down...\n")
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		shutdownErr := s.server.Shutdown(shutdownCtx)
+		forced := false
+		if errors.Is(shutdownErr, context.DeadlineExceeded) {
+			if s.statusf != nil {
+				s.statusf("Graceful shutdown timed out, forcing remaining connections closed...\n")
+			}
+			forced = true
+			_ = s.server.Close()
+		}
 		serveErr := <-errCh
-		if shutdownErr != nil {
+		if shutdownErr != nil && !forced {
 			return shutdownErr
 		}
 		if errors.Is(serveErr, http.ErrServerClosed) {
+			if s.statusf != nil {
+				s.statusf("Compose API stopped.\n")
+			}
 			return nil
 		}
 		return serveErr

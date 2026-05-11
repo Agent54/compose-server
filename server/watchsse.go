@@ -13,6 +13,7 @@ import (
 type watchRegistry struct {
 	mu        sync.Mutex
 	resources map[string]*watchResource
+	mirror    func(sseMessage)
 }
 
 type watchResource struct {
@@ -29,6 +30,12 @@ type watchConsumer struct {
 
 func newWatchRegistry() *watchRegistry {
 	return &watchRegistry{resources: map[string]*watchResource{}}
+}
+
+func (r *watchRegistry) setMirror(mirror func(sseMessage)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mirror = mirror
 }
 
 func (r *watchRegistry) start(project string, run func(context.Context, composeapi.LogConsumer) error) error {
@@ -85,6 +92,22 @@ func (r *watchRegistry) stop(project string) bool {
 	resource.closeSubscribers()
 	resource.cancel()
 	return true
+}
+
+func (r *watchRegistry) stopAll() int {
+	r.mu.Lock()
+	resources := make([]*watchResource, 0, len(r.resources))
+	for name, resource := range r.resources {
+		delete(r.resources, name)
+		resources = append(resources, resource)
+	}
+	r.mu.Unlock()
+
+	for _, resource := range resources {
+		resource.closeSubscribers()
+		resource.cancel()
+	}
+	return len(resources)
 }
 
 func (r *watchRegistry) snapshot() map[string]struct{} {
@@ -160,16 +183,31 @@ func (r *watchRegistry) subscribe(project string) (<-chan sseMessage, func()) {
 
 func (r *watchRegistry) broadcast(project string, msg sseMessage) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	resource := r.resources[project]
+	mirror := r.mirror
+	var subscribers []chan sseMessage
+	if resource != nil {
+		subscribers = make([]chan sseMessage, 0, len(resource.subscribers))
+		for _, ch := range resource.subscribers {
+			subscribers = append(subscribers, ch)
+		}
+	}
+	r.mu.Unlock()
+
 	if resource == nil {
+		if mirror != nil {
+			mirror(msg)
+		}
 		return
 	}
-	for _, ch := range resource.subscribers {
+	for _, ch := range subscribers {
 		select {
 		case ch <- msg:
 		default:
 		}
+	}
+	if mirror != nil {
+		mirror(msg)
 	}
 }
 

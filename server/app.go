@@ -102,6 +102,22 @@ func newServerApp(config serveConfig, backend backendFactory, stats statsRuntime
 	}
 }
 
+func (a *serverApp) setWatchMirror(mirror func(sseMessage)) {
+	a.watches.setMirror(mirror)
+}
+
+func (a *serverApp) shutdown(statusf func(string, ...any)) {
+	if statusf != nil {
+		count := len(a.watches.snapshot())
+		if count == 0 {
+			statusf("No active watch resources to stop.\n")
+		} else {
+			statusf("Stopping %d active watch resource(s)...\n", count)
+		}
+	}
+	_ = a.watches.stopAll()
+}
+
 func (a *serverApp) listStacks(ctx context.Context, options composeapi.ListOptions) ([]composeapi.Stack, error) {
 	if a.listOverride != nil {
 		return a.listOverride(ctx, options)
