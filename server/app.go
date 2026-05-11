@@ -651,13 +651,37 @@ func (a *serverApp) resolveProject(ctx context.Context, projectName, requestPath
 	return project, backend, nil
 }
 
+func (a *serverApp) resolveUpWatchProjects(ctx context.Context, requestPath string) (string, []*types.Project, string, error) {
+	projects, err := a.loadWatchSeedProjects(ctx, requestPath)
+	if err != nil {
+		return "", nil, "", err
+	}
+	projectName, err := commonProjectName(projects)
+	if err != nil {
+		return "", nil, "", err
+	}
+
+	projects, configFiles, err := a.resolveWatchProjectsWithSeeds(ctx, projectName, projects)
+	if err != nil {
+		return "", nil, "", err
+	}
+	return projectName, projects, configFiles, nil
+}
+
 func (a *serverApp) resolveWatchProjects(ctx context.Context, projectName, requestPath string) ([]*types.Project, string, error) {
 	if requestPath != "" {
-		project, _, err := a.resolveProject(ctx, projectName, requestPath)
+		projects, err := a.loadWatchSeedProjects(ctx, requestPath)
 		if err != nil {
 			return nil, "", err
 		}
-		return []*types.Project{project}, strings.Join(project.ComposeFiles, ","), nil
+		name, err := commonProjectName(projects)
+		if err != nil {
+			return nil, "", err
+		}
+		if projectName != "" && name != projectName {
+			return nil, "", errdefs.InvalidParameter(fmt.Errorf("project %q does not match requested watch resource %q", name, projectName))
+		}
+		return a.resolveWatchProjectsWithSeeds(ctx, name, projects)
 	}
 
 	backend, err := a.backend()
@@ -678,6 +702,67 @@ func (a *serverApp) resolveWatchProjects(ctx context.Context, projectName, reque
 		}
 	}
 	return projects, strings.Join(configFiles, ","), nil
+}
+
+func (a *serverApp) resolveWatchProjectsWithSeeds(ctx context.Context, projectName string, seeds []*types.Project) ([]*types.Project, string, error) {
+	projects := append([]*types.Project(nil), seeds...)
+
+	backend, err := a.backend()
+	if err == nil {
+		variants, err := a.findProjectVariantsByName(ctx, backend, projectName)
+		if err != nil && !errdefs.IsNotFound(err) {
+			return nil, "", err
+		}
+		projects = appendProjectVariants(projects, variants...)
+	}
+
+	configFiles := uniqueProjectConfigFiles(projects)
+	return projects, strings.Join(configFiles, ","), nil
+}
+
+func (a *serverApp) loadWatchSeedProjects(ctx context.Context, requestPath string) ([]*types.Project, error) {
+	if requestPath == "" {
+		project, _, err := a.loadProject(ctx, requestPath)
+		if err != nil {
+			return nil, err
+		}
+		return []*types.Project{project}, nil
+	}
+
+	parts := splitPathList(requestPath)
+	if len(parts) <= 1 || !a.pathListHasMultipleRoots(parts) {
+		project, _, err := a.loadProject(ctx, requestPath)
+		if err != nil {
+			return nil, err
+		}
+		return []*types.Project{project}, nil
+	}
+
+	projects := make([]*types.Project, 0, len(parts))
+	for _, part := range parts {
+		project, _, err := a.loadProject(ctx, part)
+		if err != nil {
+			return nil, err
+		}
+		projects = append(projects, project)
+	}
+	return appendProjectVariants(nil, projects...), nil
+}
+
+func (a *serverApp) pathListHasMultipleRoots(parts []string) bool {
+	roots := map[string]struct{}{}
+	for _, part := range parts {
+		resolved, err := a.resolvePathValue(a.config.rootDir, part)
+		if err != nil {
+			continue
+		}
+		root := resolved
+		if info, err := os.Stat(resolved); err != nil || !info.IsDir() {
+			root = filepath.Dir(resolved)
+		}
+		roots[root] = struct{}{}
+	}
+	return len(roots) > 1
 }
 
 func (a *serverApp) findFirstProjectByName(ctx context.Context, backend composeapi.Compose, projectName string) (*types.Project, error) {
@@ -776,6 +861,59 @@ func mergeLoadedProjects(existing, next *types.Project) *types.Project {
 		existing.Services[name] = service
 	}
 	return existing
+}
+
+func commonProjectName(projects []*types.Project) (string, error) {
+	if len(projects) == 0 {
+		return "", errdefs.NotFound(fmt.Errorf("project not found"))
+	}
+	name := projects[0].Name
+	for _, project := range projects[1:] {
+		if project.Name != name {
+			return "", errdefs.InvalidParameter(fmt.Errorf("project %q does not match requested project %q", project.Name, name))
+		}
+	}
+	return name, nil
+}
+
+func appendProjectVariants(projects []*types.Project, variants ...*types.Project) []*types.Project {
+	seen := map[string]struct{}{}
+	for _, project := range projects {
+		seen[strings.Join(project.ComposeFiles, ",")] = struct{}{}
+	}
+	for _, project := range variants {
+		key := strings.Join(project.ComposeFiles, ",")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		projects = append(projects, project)
+	}
+	return projects
+}
+
+func uniqueProjectConfigFiles(projects []*types.Project) []string {
+	configFiles := make([]string, 0)
+	for _, project := range projects {
+		for _, file := range project.ComposeFiles {
+			if !slices.Contains(configFiles, file) {
+				configFiles = append(configFiles, file)
+			}
+		}
+	}
+	return configFiles
+}
+
+func splitPathList(requestPath string) []string {
+	raw := strings.Split(requestPath, ",")
+	parts := make([]string, 0, len(raw))
+	for _, part := range raw {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return parts
 }
 
 func (a *serverApp) resolveProjectLoadRef(requestPath string) (projectLoadRef, error) {
