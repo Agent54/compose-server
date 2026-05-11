@@ -20,6 +20,7 @@ import (
 	"github.com/docker/docker/errdefs"
 	containertypes "github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
+	"golang.org/x/sync/errgroup"
 
 	composeapi "github.com/docker/compose/v5/pkg/api"
 	composepkg "github.com/docker/compose/v5/pkg/compose"
@@ -147,31 +148,35 @@ func (a *serverApp) listStacks(ctx context.Context, options composeapi.ListOptio
 }
 
 func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionResponse, error) {
-	project, _, err := a.loadProject(ctx, req.Path)
-	if err != nil {
-		return actionResponse{}, err
-	}
 	if req.Watch {
-		prepareProjectForWatch(project)
-	}
-	build := a.newBuildOptions(project)
-	var buildPtr *composeapi.BuildOptions
-	if req.Build || req.Watch {
-		buildCopy := build
-		buildPtr = &buildCopy
-	}
-
-	if req.Watch {
-		if err := a.startWatch(project, build); err != nil {
+		projectName, projects, configFiles, err := a.resolveUpWatchProjects(ctx, req.Path)
+		if err != nil {
+			return actionResponse{}, err
+		}
+		for _, project := range projects {
+			prepareProjectForWatch(project)
+		}
+		if err := a.startWatch(projectName, projects); err != nil {
 			return actionResponse{}, err
 		}
 		return actionResponse{
 			OK:          true,
-			Project:     project.Name,
-			ConfigFiles: strings.Join(project.ComposeFiles, ","),
+			Project:     projectName,
+			ConfigFiles: configFiles,
 			Watching:    true,
-			WatchURL:    watchURL(project.Name, true),
+			WatchURL:    watchURL(projectName, true),
 		}, nil
+	}
+
+	project, _, err := a.loadProject(ctx, req.Path)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	build := a.newBuildOptions(project)
+	var buildPtr *composeapi.BuildOptions
+	if req.Build {
+		buildCopy := build
+		buildPtr = &buildCopy
 	}
 
 	var (
@@ -260,20 +265,22 @@ func (a *serverApp) renderProjectConfig(ctx context.Context, projectName, reques
 }
 
 func (a *serverApp) restartWatch(ctx context.Context, projectName string, req watchRequest) (actionResponse, error) {
-	project, _, err := a.resolveProject(ctx, projectName, req.Path)
+	projects, configFiles, err := a.resolveWatchProjects(ctx, projectName, req.Path)
 	if err != nil {
 		return actionResponse{}, err
 	}
-	prepareProjectForWatch(project)
-	if err := a.startWatch(project, a.newBuildOptions(project)); err != nil {
+	for _, project := range projects {
+		prepareProjectForWatch(project)
+	}
+	if err := a.startWatch(projectName, projects); err != nil {
 		return actionResponse{}, err
 	}
 	return actionResponse{
 		OK:          true,
-		Project:     project.Name,
-		ConfigFiles: strings.Join(project.ComposeFiles, ","),
+		Project:     projectName,
+		ConfigFiles: configFiles,
 		Watching:    true,
-		WatchURL:    watchURL(project.Name, true),
+		WatchURL:    watchURL(projectName, true),
 	}, nil
 }
 
@@ -552,16 +559,23 @@ func (a *serverApp) streamWatch(ctx context.Context, projectName string, w http.
 	return a.watches.stream(ctx, projectName, w)
 }
 
-func (a *serverApp) startWatch(project *types.Project, build composeapi.BuildOptions) error {
-	return a.watches.start(project.Name, func(ctx context.Context, consumer composeapi.LogConsumer) error {
-		backend, err := a.backend(
-			composepkg.WithOutputStream(newLogConsumerWriter(consumer, "stdout")),
-			composepkg.WithErrorStream(newLogConsumerWriter(consumer, "stderr")),
-		)
-		if err != nil {
-			return err
+func (a *serverApp) startWatch(projectName string, projects []*types.Project) error {
+	return a.watches.start(projectName, func(ctx context.Context, consumer composeapi.LogConsumer) error {
+		eg, ctx := errgroup.WithContext(ctx)
+		for _, project := range projects {
+			project := project
+			eg.Go(func() error {
+				backend, err := a.backend(
+					composepkg.WithOutputStream(newLogConsumerWriter(consumer, "stdout")),
+					composepkg.WithErrorStream(newLogConsumerWriter(consumer, "stderr")),
+				)
+				if err != nil {
+					return err
+				}
+				return backend.Up(ctx, project, watchModeUpOptions(project, a.newBuildOptions(project), consumer))
+			})
 		}
-		return backend.Up(ctx, project, watchModeUpOptions(project, build, consumer))
+		return eg.Wait()
 	})
 }
 
@@ -637,6 +651,35 @@ func (a *serverApp) resolveProject(ctx context.Context, projectName, requestPath
 	return project, backend, nil
 }
 
+func (a *serverApp) resolveWatchProjects(ctx context.Context, projectName, requestPath string) ([]*types.Project, string, error) {
+	if requestPath != "" {
+		project, _, err := a.resolveProject(ctx, projectName, requestPath)
+		if err != nil {
+			return nil, "", err
+		}
+		return []*types.Project{project}, strings.Join(project.ComposeFiles, ","), nil
+	}
+
+	backend, err := a.backend()
+	if err != nil {
+		return nil, "", err
+	}
+	projects, err := a.findProjectVariantsByName(ctx, backend, projectName)
+	if err != nil {
+		return nil, "", err
+	}
+
+	configFiles := make([]string, 0)
+	for _, project := range projects {
+		for _, file := range project.ComposeFiles {
+			if !slices.Contains(configFiles, file) {
+				configFiles = append(configFiles, file)
+			}
+		}
+	}
+	return projects, strings.Join(configFiles, ","), nil
+}
+
 func (a *serverApp) findFirstProjectByName(ctx context.Context, backend composeapi.Compose, projectName string) (*types.Project, error) {
 	dirs, err := findComposeDirectories(newDiscoveryOptions(a.config))
 	if err != nil {
@@ -652,6 +695,39 @@ func (a *serverApp) findFirstProjectByName(ctx context.Context, backend composea
 		}
 	}
 	return nil, errdefs.NotFound(fmt.Errorf("project %q not found", projectName))
+}
+
+func (a *serverApp) findProjectVariantsByName(ctx context.Context, backend composeapi.Compose, projectName string) ([]*types.Project, error) {
+	dirs, err := findComposeDirectories(newDiscoveryOptions(a.config))
+	if err != nil {
+		return nil, err
+	}
+
+	projects := make([]*types.Project, 0)
+	seen := map[string]struct{}{}
+	for _, dir := range dirs {
+		project, err := backend.LoadProject(ctx, composeapi.ProjectLoadOptions{
+			WorkingDir: dir,
+			Offline:    true,
+		})
+		if err != nil || project.Name != projectName {
+			continue
+		}
+		project, err = runtimeProject(project)
+		if err != nil {
+			return nil, err
+		}
+		key := strings.Join(project.ComposeFiles, ",")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		projects = append(projects, project)
+	}
+	if len(projects) == 0 {
+		return nil, errdefs.NotFound(fmt.Errorf("project %q not found", projectName))
+	}
+	return projects, nil
 }
 
 func (a *serverApp) findMergedProjectByName(ctx context.Context, backend composeapi.Compose, projectName string) (*types.Project, error) {
