@@ -74,6 +74,8 @@ func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.C
 					client: dockerCli.Client(),
 					osType: dockerCli.ServerInfo().OSType,
 				}, nil
+			}, func(format string, args ...any) {
+				_, _ = fmt.Fprintf(dockerCli.Out(), format, args...)
 			})
 			if err != nil {
 				return err
@@ -94,7 +96,7 @@ func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.C
 	return cmd
 }
 
-func newHTTPServer(target serveTarget, cfg serveConfig, backend backendFactory, stats statsRuntimeFactory) (*httpServer, error) {
+func newHTTPServer(target serveTarget, cfg serveConfig, backend backendFactory, stats statsRuntimeFactory, statusf func(string, ...any)) (*httpServer, error) {
 	versionMiddleware, err := middleware.NewVersionMiddleware(internal.Version, api.DefaultVersion, api.MinSupportedAPIVersion)
 	if err != nil {
 		return nil, err
@@ -103,11 +105,26 @@ func newHTTPServer(target serveTarget, cfg serveConfig, backend backendFactory, 
 	server := &engineserver.Server{}
 	server.UseMiddleware(*versionMiddleware)
 
-	mux := server.CreateMux(context.Background(), newRouter(newServerApp(cfg, backend, stats)))
+	app := newServerApp(cfg, backend, stats)
+	if statusf != nil {
+		app.setWatchMirror(func(msg sseMessage) {
+			statusf("%s\n", formatWatchMirrorMessage(msg))
+		})
+	}
+	mux := server.CreateMux(context.Background(), newRouter(app))
 	return &httpServer{
 		target: target,
 		server: &http.Server{Handler: wrapCORS(mux, cfg.allowedOrigins)},
+		app:    app,
+		statusf: statusf,
 	}, nil
+}
+
+func formatWatchMirrorMessage(msg sseMessage) string {
+	if msg.Source != "" && msg.Source != composeapi.WatchLogger && msg.Source != composeapi.ResourceCompose {
+		return fmt.Sprintf("watch[%s][%s][%s] %s", msg.Project, msg.Stream, msg.Source, msg.Message)
+	}
+	return fmt.Sprintf("watch[%s][%s] %s", msg.Project, msg.Stream, msg.Message)
 }
 
 func formatAllowedOrigins(origins []string) string {
