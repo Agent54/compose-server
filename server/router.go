@@ -351,6 +351,40 @@ func (r *composeRouter) psProject(ctx context.Context, w http.ResponseWriter, re
 	return writeJSON(w, http.StatusOK, containers)
 }
 
+func (r *composeRouter) logsProject(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
+	if err := httputils.ParseForm(req); err != nil {
+		return err
+	}
+	follow, err := parseOptionalBool(req.Form.Get("follow"))
+	if err != nil {
+		return err
+	}
+	timestamps, err := parseOptionalBool(req.Form.Get("timestamps"))
+	if err != nil {
+		return err
+	}
+	index := 0
+	if value := req.Form.Get("index"); value != "" {
+		index, err = strconv.Atoi(value)
+		if err != nil {
+			return errdefs.InvalidParameter(err)
+		}
+		if index < 0 {
+			return errdefs.InvalidParameter(fmt.Errorf("index must be >= 0"))
+		}
+	}
+	return r.app.streamLogs(ctx, vars["project"], logsRequest{
+		Path:       req.Form.Get("path"),
+		Services:   req.Form["service"],
+		Follow:     follow,
+		Index:      index,
+		Tail:       req.Form.Get("tail"),
+		Since:      req.Form.Get("since"),
+		Until:      req.Form.Get("until"),
+		Timestamps: timestamps,
+	}, w)
+}
+
 func (r *composeRouter) topProject(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
 	if err := httputils.ParseForm(req); err != nil {
 		return err
@@ -573,6 +607,22 @@ func serveRoutes() []routeSpec {
 				{Name: "status", Type: "string", Repeated: true, Description: "Filter by container state"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.psProject },
+		},
+		{
+			method:  http.MethodGet,
+			path:    "/logs/{project}",
+			summary: "Stream project container logs over SSE using Compose's internal logs implementation",
+			queryParams: []queryParamSpec{
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
+				{Name: "service", Type: "string", Repeated: true, Description: "Optional service names"},
+				{Name: "follow", Type: "boolean", Description: "Follow log output"},
+				{Name: "index", Type: "integer", Description: "Replica index; requires exactly one service"},
+				{Name: "tail", Type: "string", Description: "Number of lines from the end; defaults to all"},
+				{Name: "since", Type: "string", Description: "Show logs since timestamp or relative duration"},
+				{Name: "until", Type: "string", Description: "Show logs before timestamp or relative duration"},
+				{Name: "timestamps", Type: "boolean", Description: "Include timestamps"},
+			},
+			handler: func(r *composeRouter) httputils.APIFunc { return r.logsProject },
 		},
 		{
 			method:  http.MethodGet,
