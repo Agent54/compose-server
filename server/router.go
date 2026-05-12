@@ -111,8 +111,6 @@ func statusCodeForError(err error) int {
 		return http.StatusConflict
 	case errdefs.IsUnauthorized(err):
 		return http.StatusUnauthorized
-	case errdefs.IsPermissionDenied(err):
-		return http.StatusForbidden
 	default:
 		return http.StatusInternalServerError
 	}
