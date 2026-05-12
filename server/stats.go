@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	containercmd "github.com/docker/cli/cli/command/container"
@@ -32,6 +33,44 @@ type statsRequest struct {
 	NoStream bool
 	NoTrunc  bool
 	Format   string
+}
+
+type systemInfoResponse struct {
+	OK                bool    `json:"ok"`
+	CPUCount          int     `json:"cpuCount"`
+	NCPU              int     `json:"NCPU"`
+	CPUPercent        float64 `json:"cpuPercent"`
+	MemoryUsedBytes   float64 `json:"memoryUsedBytes"`
+	MemoryTotalBytes  int64   `json:"memoryTotalBytes"`
+	MemTotal          int64   `json:"MemTotal"`
+	MemoryPercent     float64 `json:"memoryPercent"`
+	UsageScope        string  `json:"usageScope"`
+	OSType            string  `json:"osType,omitempty"`
+	OperatingSystem   string  `json:"operatingSystem,omitempty"`
+	Architecture      string  `json:"architecture,omitempty"`
+	ServerVersion      string  `json:"serverVersion,omitempty"`
+	DockerRootDir      string  `json:"dockerRootDir,omitempty"`
+	StorageDriver     string  `json:"storageDriver,omitempty"`
+	ContainersRunning int     `json:"containersRunning"`
+	Raw               any     `json:"raw"`
+}
+
+type systemDiskUsageResponse struct {
+	OK         bool  `json:"ok"`
+	UsedBytes int64 `json:"usedBytes"`
+	TotalBytes uint64 `json:"totalBytes,omitempty"`
+	Images     diskUsageSummary `json:"images"`
+	Containers diskUsageSummary `json:"containers"`
+	Volumes    diskUsageSummary `json:"volumes"`
+	BuildCache diskUsageSummary `json:"buildCache"`
+	Raw        any              `json:"raw"`
+}
+
+type diskUsageSummary struct {
+	ActiveCount int64 `json:"activeCount"`
+	TotalCount  int64 `json:"totalCount"`
+	UsedBytes   int64 `json:"usedBytes"`
+	Reclaimable int64 `json:"reclaimable"`
 }
 
 type resourcesRequest struct {
@@ -109,32 +148,99 @@ type statsSnapshot struct {
 	err   error
 }
 
-func (a *serverApp) systemInfo(ctx context.Context) (any, error) {
+func (a *serverApp) systemInfo(ctx context.Context) (systemInfoResponse, error) {
 	if a.stats == nil {
-		return nil, fmt.Errorf("stats runtime unavailable")
+		return systemInfoResponse{}, fmt.Errorf("stats runtime unavailable")
 	}
 	runtime, err := a.stats()
 	if err != nil {
-		return nil, err
+		return systemInfoResponse{}, err
 	}
 	if runtime.client == nil {
-		return nil, fmt.Errorf("stats runtime unavailable")
+		return systemInfoResponse{}, fmt.Errorf("stats runtime unavailable")
 	}
-	return runtime.client.Info(ctx, mobyclient.InfoOptions{})
+	info, err := runtime.client.Info(ctx, mobyclient.InfoOptions{})
+	if err != nil {
+		return systemInfoResponse{}, err
+	}
+	containers, err := runtime.client.ContainerList(ctx, mobyclient.ContainerListOptions{All: false})
+	if err != nil {
+		return systemInfoResponse{}, err
+	}
+	stats := collectStatsSnapshot(ctx, runtime.client, runtime.osType, containers.Items)
+	usage := aggregateStatsUsage(stats)
+	memoryPercent := 0.0
+	if info.Info.MemTotal > 0 {
+		memoryPercent = usage.MemoryBytes / float64(info.Info.MemTotal) * 100.0
+	}
+	return systemInfoResponse{
+		OK:                true,
+		CPUCount:          info.Info.NCPU,
+		NCPU:              info.Info.NCPU,
+		CPUPercent:        usage.CPUPercent,
+		MemoryUsedBytes:   usage.MemoryBytes,
+		MemoryTotalBytes:  info.Info.MemTotal,
+		MemTotal:          info.Info.MemTotal,
+		MemoryPercent:     memoryPercent,
+		UsageScope:        "docker-containers",
+		OSType:            info.Info.OSType,
+		OperatingSystem:   info.Info.OperatingSystem,
+		Architecture:      info.Info.Architecture,
+		ServerVersion:      info.Info.ServerVersion,
+		DockerRootDir:      info.Info.DockerRootDir,
+		StorageDriver:     info.Info.Driver,
+		ContainersRunning: len(containers.Items),
+		Raw:               info,
+	}, nil
 }
 
-func (a *serverApp) systemDiskUsage(ctx context.Context) (any, error) {
+func (a *serverApp) systemDiskUsage(ctx context.Context) (systemDiskUsageResponse, error) {
 	if a.stats == nil {
-		return nil, fmt.Errorf("stats runtime unavailable")
+		return systemDiskUsageResponse{}, fmt.Errorf("stats runtime unavailable")
 	}
 	runtime, err := a.stats()
 	if err != nil {
-		return nil, err
+		return systemDiskUsageResponse{}, err
 	}
 	if runtime.client == nil {
-		return nil, fmt.Errorf("stats runtime unavailable")
+		return systemDiskUsageResponse{}, fmt.Errorf("stats runtime unavailable")
 	}
-	return runtime.client.DiskUsage(ctx, mobyclient.DiskUsageOptions{})
+	usage, err := runtime.client.DiskUsage(ctx, mobyclient.DiskUsageOptions{})
+	if err != nil {
+		return systemDiskUsageResponse{}, err
+	}
+	info, _ := runtime.client.Info(ctx, mobyclient.InfoOptions{})
+	usedBytes := usage.Images.TotalSize + usage.Containers.TotalSize + usage.Volumes.TotalSize + usage.BuildCache.TotalSize
+	return systemDiskUsageResponse{
+		OK:         true,
+		UsedBytes: usedBytes,
+		TotalBytes: filesystemTotalBytes(info.Info.DockerRootDir),
+		Images: diskUsageSummary{
+			ActiveCount: usage.Images.ActiveCount,
+			TotalCount:  usage.Images.TotalCount,
+			UsedBytes:   usage.Images.TotalSize,
+			Reclaimable: usage.Images.Reclaimable,
+		},
+		Containers: diskUsageSummary{
+			ActiveCount: usage.Containers.ActiveCount,
+			TotalCount:  usage.Containers.TotalCount,
+			UsedBytes:   usage.Containers.TotalSize,
+			Reclaimable: usage.Containers.Reclaimable,
+		},
+		Volumes: diskUsageSummary{
+			ActiveCount: usage.Volumes.ActiveCount,
+			TotalCount:  usage.Volumes.TotalCount,
+			UsedBytes:   usage.Volumes.TotalSize,
+			Reclaimable: usage.Volumes.Reclaimable,
+		},
+		BuildCache: diskUsageSummary{
+			ActiveCount: usage.BuildCache.ActiveCount,
+			TotalCount:  usage.BuildCache.TotalCount,
+			UsedBytes:   usage.BuildCache.TotalSize,
+			Reclaimable: usage.BuildCache.Reclaimable,
+		},
+		Raw: usage,
+	}, nil
 }
 
 func (a *serverApp) streamStats(ctx context.Context, projectName string, req statsRequest, w http.ResponseWriter) error {
@@ -384,6 +490,28 @@ func collectStatsSnapshot(ctx context.Context, apiClient mobyclient.APIClient, o
 	return entries
 }
 
+func aggregateStatsUsage(stats map[string]statsSnapshot) resourceUsage {
+	usage := resourceUsage{}
+	for _, snapshot := range stats {
+		if snapshot.entry.IsInvalid {
+			continue
+		}
+		item := usageFromStats(snapshot.entry)
+		usage.CPUPercent += item.CPUPercent
+		usage.MemoryBytes += item.MemoryBytes
+		usage.MemoryLimitBytes += item.MemoryLimitBytes
+		usage.NetworkRxBytes += item.NetworkRxBytes
+		usage.NetworkTxBytes += item.NetworkTxBytes
+		usage.BlockReadBytes += item.BlockReadBytes
+		usage.BlockWriteBytes += item.BlockWriteBytes
+		usage.PidsCurrent += item.PidsCurrent
+	}
+	if usage.MemoryLimitBytes > 0 {
+		usage.MemoryPercent = usage.MemoryBytes / usage.MemoryLimitBytes * 100.0
+	}
+	return usage
+}
+
 func usageFromStats(entry containercmd.StatsEntry) resourceUsage {
 	return resourceUsage{
 		CPUPercent:       entry.CPUPercentage,
@@ -515,6 +643,17 @@ func addContainerToAggregate(aggregate *resourceAggregate, ctr containerResource
 		}
 		*aggregate.Limits.PidsLimit += *ctr.Limits.PidsLimit
 	}
+}
+
+func filesystemTotalBytes(path string) uint64 {
+	if path == "" {
+		return 0
+	}
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0
+	}
+	return stat.Blocks * uint64(stat.Bsize)
 }
 
 func statsEntryName(entry containercmd.StatsEntry) string {
