@@ -663,11 +663,8 @@ func (a *serverApp) resolveUpWatchProjects(ctx context.Context, requestPath stri
 		return "", nil, "", err
 	}
 
-	projects, configFiles, err := a.resolveWatchProjectsWithSeeds(ctx, projectName, projects)
-	if err != nil {
-		return "", nil, "", err
-	}
-	return projectName, projects, configFiles, nil
+	configFiles := uniqueProjectConfigFiles(projects)
+	return projectName, projects, strings.Join(configFiles, ","), nil
 }
 
 func (a *serverApp) resolveWatchProjects(ctx context.Context, projectName, requestPath string) ([]*types.Project, string, error) {
@@ -683,7 +680,8 @@ func (a *serverApp) resolveWatchProjects(ctx context.Context, projectName, reque
 		if projectName != "" && name != projectName {
 			return nil, "", errdefs.InvalidParameter(fmt.Errorf("project %q does not match requested watch resource %q", name, projectName))
 		}
-		return a.resolveWatchProjectsWithSeeds(ctx, name, projects)
+		configFiles := uniqueProjectConfigFiles(projects)
+		return projects, strings.Join(configFiles, ","), nil
 	}
 
 	backend, err := a.backend()
@@ -703,22 +701,6 @@ func (a *serverApp) resolveWatchProjects(ctx context.Context, projectName, reque
 			}
 		}
 	}
-	return projects, strings.Join(configFiles, ","), nil
-}
-
-func (a *serverApp) resolveWatchProjectsWithSeeds(ctx context.Context, projectName string, seeds []*types.Project) ([]*types.Project, string, error) {
-	projects := append([]*types.Project(nil), seeds...)
-
-	backend, err := a.backend()
-	if err == nil {
-		variants, err := a.findProjectVariantsByName(ctx, backend, projectName)
-		if err != nil && !errdefs.IsNotFound(err) {
-			return nil, "", err
-		}
-		projects = appendProjectVariants(projects, variants...)
-	}
-
-	configFiles := uniqueProjectConfigFiles(projects)
 	return projects, strings.Join(configFiles, ","), nil
 }
 
