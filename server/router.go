@@ -77,9 +77,45 @@ func newRouter(app *serverApp) router.Router {
 func (r *composeRouter) Routes() []router.Route {
 	routes := make([]router.Route, 0, len(serveRoutes()))
 	for _, spec := range serveRoutes() {
-		routes = append(routes, router.NewRoute(spec.method, spec.path, spec.handler(r)))
+		routes = append(routes, router.NewRoute(spec.method, spec.path, withJSONError(spec.handler(r))))
 	}
 	return routes
+}
+
+type errorResponse struct {
+	OK      bool   `json:"ok"`
+	Error   string `json:"error"`
+	Message string `json:"message"`
+}
+
+func withJSONError(handler httputils.APIFunc) httputils.APIFunc {
+	return func(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
+		if err := handler(ctx, w, req, vars); err != nil {
+			return writeJSON(w, statusCodeForError(err), errorResponse{
+				OK:      false,
+				Error:   err.Error(),
+				Message: err.Error(),
+			})
+		}
+		return nil
+	}
+}
+
+func statusCodeForError(err error) int {
+	switch {
+	case errdefs.IsInvalidParameter(err):
+		return http.StatusBadRequest
+	case errdefs.IsNotFound(err):
+		return http.StatusNotFound
+	case errdefs.IsConflict(err):
+		return http.StatusConflict
+	case errdefs.IsUnauthorized(err):
+		return http.StatusUnauthorized
+	case errdefs.IsPermissionDenied(err):
+		return http.StatusForbidden
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 func (r *composeRouter) rootSchema(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
@@ -402,6 +438,7 @@ func serveRoutes() []routeSpec {
 			summary: "Start a Compose project; optional watch mode starts a per-project watch resource",
 			bodyFields: []bodyFieldSpec{
 				{Name: "path", Type: "string", Description: "Project directory, compose file path, or comma-separated compose file list; relative paths are resolved from the serve root"},
+				{Name: "services", Type: "string[]", Description: "Optional service names"},
 				{Name: "build", Type: "boolean", Description: "Build before starting"},
 				{Name: "watch", Type: "boolean", Description: "Start watch mode after up succeeds"},
 			},

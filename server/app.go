@@ -45,9 +45,10 @@ type serverApp struct {
 }
 
 type upRequest struct {
-	Path  string `json:"path,omitempty"`
-	Build bool   `json:"build,omitempty"`
-	Watch bool   `json:"watch,omitempty"`
+	Path     string   `json:"path,omitempty"`
+	Services []string `json:"services,omitempty"`
+	Build    bool     `json:"build,omitempty"`
+	Watch    bool     `json:"watch,omitempty"`
 }
 
 type watchRequest struct {
@@ -194,29 +195,38 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 	}
 
 	var upErr error
+	matched := false
 	for _, project := range projects {
+		services, ok := servicesForProject(project, req.Services)
+		if !ok {
+			continue
+		}
+		matched = true
 		var buildPtr *composeapi.BuildOptions
 		if req.Build {
-			build := a.newBuildOptions(project)
+			build := a.newBuildOptionsForServices(project, services)
 			buildPtr = &build
 		}
 		err = backend.Up(ctx, project, composeapi.UpOptions{
 			Create: composeapi.CreateOptions{
 				Build:                buildPtr,
-				Services:             project.ServiceNames(),
+				Services:             services,
 				Recreate:             composeapi.RecreateDiverged,
 				RecreateDependencies: composeapi.RecreateDiverged,
 				Inherit:              true,
 			},
 			Start: composeapi.StartOptions{
 				Project:  project,
-				Services: project.ServiceNames(),
+				Services: services,
 			},
 		})
 		if err != nil {
 			upErr = err
 			break
 		}
+	}
+	if !matched {
+		return actionResponse{}, errdefs.InvalidParameter(fmt.Errorf("service not found: %s", strings.Join(req.Services, ",")))
 	}
 	if buildID != "" {
 		a.builds.finish(buildID, upErr == nil)
@@ -1089,9 +1099,13 @@ func (a *serverApp) resolvePathValue(root, requestPath string) (string, error) {
 }
 
 func (a *serverApp) newBuildOptions(project *types.Project) composeapi.BuildOptions {
+	return a.newBuildOptionsForServices(project, project.ServiceNames())
+}
+
+func (a *serverApp) newBuildOptionsForServices(project *types.Project, services []string) composeapi.BuildOptions {
 	return composeapi.BuildOptions{
 		Progress: "plain",
-		Services: project.ServiceNames(),
+		Services: services,
 		Deps:     true,
 	}
 }
