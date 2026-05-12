@@ -158,7 +158,7 @@ func (c *monitor) Start(ctx context.Context) error {
 			case events.ActionStart:
 				c.onContainerStart(event, ctr, containers, restarting)
 			case events.ActionRestart:
-				c.onContainerRestart(event, ctr)
+				c.onContainerRestart(event, ctr, restarting)
 			case events.ActionDie:
 				err := c.onContainerDie(ctx, event, ctr, containers, restarting)
 				if err != nil {
@@ -218,6 +218,7 @@ func (c *monitor) onContainerCreate(event events.Message, ctr *api.ContainerSumm
 
 func (c *monitor) onContainerStart(event events.Message, ctr *api.ContainerSummary, containers, restarting utils.Set[string]) {
 	if restarting.Has(ctr.ID) {
+		restarting.Remove(ctr.ID)
 		logrus.Debugf("container %s restarted", ctr.Name)
 		c.notify(newContainerEvent(event.TimeNano, ctr, api.ContainerEventStarted, func(e *api.ContainerEvent) {
 			e.Restarting = true
@@ -231,7 +232,8 @@ func (c *monitor) onContainerStart(event events.Message, ctr *api.ContainerSumma
 	}
 }
 
-func (c *monitor) onContainerRestart(event events.Message, ctr *api.ContainerSummary) {
+func (c *monitor) onContainerRestart(event events.Message, ctr *api.ContainerSummary, restarting utils.Set[string]) {
+	restarting.Add(ctr.ID)
 	c.notify(newContainerEvent(event.TimeNano, ctr, api.ContainerEventRestarted))
 	logrus.Debugf("container %s restarted", ctr.Name)
 }
@@ -245,7 +247,7 @@ func (c *monitor) onContainerDie(ctx context.Context, event events.Message, ctr 
 		return err
 	}
 
-	if inspect.Container.State != nil && (inspect.Container.State.Restarting || inspect.Container.State.Running) {
+	if restarting.Has(ctr.ID) || (inspect.Container.State != nil && (inspect.Container.State.Restarting || inspect.Container.State.Running)) {
 		// State.Restarting is set by engine when container is configured to restart on exit
 		// on ContainerRestart it doesn't (see https://github.com/moby/moby/issues/45538)
 		// container state still is reported as "running"

@@ -776,11 +776,7 @@ func (a *serverApp) resolveProjectVariantsWithBackend(ctx context.Context, backe
 		return projects, projectName, nil
 	}
 
-	project, err := a.loadProjectWithBackend(ctx, backend, "")
-	if err != nil {
-		return nil, "", err
-	}
-	return []*types.Project{project}, project.Name, nil
+	return nil, "", errdefs.InvalidParameter(fmt.Errorf("project or path is required"))
 }
 
 func (a *serverApp) resolveProject(ctx context.Context, projectName, requestPath string) (*types.Project, composeapi.Compose, error) {

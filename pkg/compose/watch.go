@@ -69,8 +69,9 @@ func NewWatcher(project *types.Project, options api.UpOptions, w WatchFunc, cons
 			return &Watcher{
 				project: project,
 				options: api.WatchOptions{
-					LogTo: consumer,
-					Build: build,
+					LogTo:    consumer,
+					Build:    build,
+					Services: options.Start.Services,
 				},
 				watchFn: w,
 				errCh:   make(chan error),
@@ -617,7 +618,7 @@ func (s *composeService) handleWatchBatch(ctx context.Context, project *types.Pr
 	}
 	if len(restart) > 0 {
 		services := utils.MapKeys(restart)
-		err := s.restart(ctx, project.Name, api.RestartOptions{
+		err := s.restart(context.WithoutCancel(ctx), project.Name, api.RestartOptions{
 			Services: services,
 			Project:  project,
 			NoDeps:   false,
