@@ -435,6 +435,7 @@ func serveRoutes() []routeSpec {
 			path:    "/up",
 			summary: "Start a Compose project; optional watch mode starts a per-project watch resource",
 			bodyFields: []bodyFieldSpec{
+				{Name: "project", Type: "string", Description: "Optional project name; when path is omitted, all discovered compose-file variants with this name are started independently"},
 				{Name: "path", Type: "string", Description: "Project directory, compose file path, or comma-separated compose file list; relative paths are resolved from the serve root"},
 				{Name: "services", Type: "string[]", Description: "Optional service names"},
 				{Name: "build", Type: "boolean", Description: "Build before starting"},
@@ -632,6 +633,7 @@ func serveRoutes() []routeSpec {
 			summary: "Start or restart a watch resource for an already upped project",
 			bodyFields: []bodyFieldSpec{
 				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
+				{Name: "services", Type: "string[]", Description: "Optional service names"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.postWatch },
 		},
