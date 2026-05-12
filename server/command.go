@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -59,6 +60,9 @@ func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.C
 			if len(args) > 0 {
 				cfg.rootDir = args[0]
 			}
+			if err := prepareServeEnvironment(&cfg); err != nil {
+				return err
+			}
 
 			target, err := serveTargetForConfig(cfg, port)
 			if err != nil {
@@ -86,6 +90,7 @@ func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.C
 			_, _ = fmt.Fprintf(dockerCli.Out(), "Max depth: %d\n", cfg.maxDepth)
 			_, _ = fmt.Fprintf(dockerCli.Out(), "Excluded dirs: %s\n", strings.Join(cfg.excludedDir, ", "))
 			_, _ = fmt.Fprintf(dockerCli.Out(), "Allowed origins: %s\n", formatAllowedOrigins(cfg.allowedOrigins))
+			_, _ = fmt.Fprintf(dockerCli.Out(), "Compose env: STACKS_PATH=%s HOST_UID=%s HOST_GID=%s\n", os.Getenv("STACKS_PATH"), os.Getenv("HOST_UID"), os.Getenv("HOST_GID"))
 			return srv.run(ctx)
 		},
 	}
@@ -132,6 +137,26 @@ func formatAllowedOrigins(origins []string) string {
 		return "(disabled)"
 	}
 	return strings.Join(origins, ", ")
+}
+
+func prepareServeEnvironment(cfg *serveConfig) error {
+	root, err := filepath.Abs(cfg.rootDir)
+	if err != nil {
+		return fmt.Errorf("resolve serve root: %w", err)
+	}
+	cfg.rootDir = filepath.Clean(root)
+
+	setDefaultEnv("STACKS_PATH", cfg.rootDir)
+	setDefaultEnv("HOST_UID", strconv.Itoa(os.Getuid()))
+	setDefaultEnv("HOST_GID", strconv.Itoa(os.Getgid()))
+	return nil
+}
+
+func setDefaultEnv(key string, value string) {
+	if _, ok := os.LookupEnv(key); ok {
+		return
+	}
+	_ = os.Setenv(key, value)
 }
 
 type serveTarget struct {
