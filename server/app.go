@@ -169,68 +169,79 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 		}, nil
 	}
 
-	project, _, err := a.loadProject(ctx, req.Path)
+	projects, backend, err := a.loadProjectVariants(ctx, req.Path)
 	if err != nil {
 		return actionResponse{}, err
 	}
-	build := a.newBuildOptions(project)
-	var buildPtr *composeapi.BuildOptions
-	if req.Build {
-		buildCopy := build
-		buildPtr = &buildCopy
+	projectName, err := commonProjectName(projects)
+	if err != nil {
+		return actionResponse{}, err
 	}
 
-	var (
-		backend composeapi.Compose
-		buildID string
-	)
-	if buildPtr != nil {
-		buildID = a.builds.start(project.Name)
-		backend, err = a.backend(
-			composepkg.WithEventProcessor(a.builds.processor(buildID, project.Name)),
-			composepkg.WithOutputStream(a.builds.writer(buildID, project.Name, "stdout")),
-			composepkg.WithErrorStream(a.builds.writer(buildID, project.Name, "stderr")),
-		)
+	var buildID string
+	if req.Build {
+		buildID = a.builds.start(projectName)
+		backend, err = a.instrumentedBuildBackend(buildID, projectName)
 		if err != nil {
 			a.builds.finish(buildID, false)
 			return actionResponse{}, err
 		}
-	} else {
-		backend, err = a.backend()
+		projects, err = a.loadProjectVariantsWithBackend(ctx, backend, req.Path)
 		if err != nil {
+			a.builds.finish(buildID, false)
 			return actionResponse{}, err
 		}
 	}
 
-	err = backend.Up(ctx, project, composeapi.UpOptions{
-		Create: composeapi.CreateOptions{
-			Build:                buildPtr,
-			Services:             project.ServiceNames(),
-			Recreate:             composeapi.RecreateDiverged,
-			RecreateDependencies: composeapi.RecreateNever,
-			Inherit:              true,
-		},
-		Start: composeapi.StartOptions{
-			Project:  project,
-			Services: project.ServiceNames(),
-		},
-	})
-	if buildID != "" {
-		a.builds.finish(buildID, err == nil)
+	var upErr error
+	for _, project := range projects {
+		var buildPtr *composeapi.BuildOptions
+		if req.Build {
+			build := a.newBuildOptions(project)
+			buildPtr = &build
+		}
+		err = backend.Up(ctx, project, composeapi.UpOptions{
+			Create: composeapi.CreateOptions{
+				Build:                buildPtr,
+				Services:             project.ServiceNames(),
+				Recreate:             composeapi.RecreateDiverged,
+				RecreateDependencies: composeapi.RecreateDiverged,
+				Inherit:              true,
+			},
+			Start: composeapi.StartOptions{
+				Project:  project,
+				Services: project.ServiceNames(),
+			},
+		})
+		if err != nil {
+			upErr = err
+			break
+		}
 	}
-	if err != nil {
-		return actionResponse{}, err
+	if buildID != "" {
+		a.builds.finish(buildID, upErr == nil)
+	}
+	if upErr != nil {
+		return actionResponse{}, upErr
 	}
 
 	return actionResponse{
 		OK:          true,
-		Project:     project.Name,
-		ConfigFiles: strings.Join(project.ComposeFiles, ","),
+		Project:     projectName,
+		ConfigFiles: strings.Join(uniqueProjectConfigFiles(projects), ","),
 		Watching:    req.Watch,
-		WatchURL:    watchURL(project.Name, req.Watch),
+		WatchURL:    watchURL(projectName, req.Watch),
 		BuildID:     buildID,
 		BuildURL:    buildURL(buildID),
 	}, nil
+}
+
+func (a *serverApp) instrumentedBuildBackend(buildID, projectName string) (composeapi.Compose, error) {
+	return a.backend(
+		composepkg.WithEventProcessor(a.builds.processor(buildID, projectName)),
+		composepkg.WithOutputStream(a.builds.writer(buildID, projectName, "stdout")),
+		composepkg.WithErrorStream(a.builds.writer(buildID, projectName, "stderr")),
+	)
 }
 
 func (a *serverApp) listBuilds() []buildSummary {
@@ -286,6 +297,38 @@ func (a *serverApp) restartWatch(ctx context.Context, projectName string, req wa
 }
 
 func (a *serverApp) startProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {
+	if req.Path != "" {
+		projects, backend, name, err := a.resolveActionProjects(ctx, projectName, req.Path)
+		if err != nil {
+			return actionResponse{}, err
+		}
+		waitTimeout, err := durationFromSeconds(req.WaitTimeoutSecs)
+		if err != nil {
+			return actionResponse{}, err
+		}
+		matched := false
+		for _, project := range projects {
+			services, ok := servicesForProject(project, req.Services)
+			if !ok {
+				continue
+			}
+			matched = true
+			if err := backend.Start(ctx, name, composeapi.StartOptions{
+				Project:     project,
+				AttachTo:    services,
+				Services:    services,
+				Wait:        req.Wait,
+				WaitTimeout: waitTimeout,
+			}); err != nil {
+				return actionResponse{}, err
+			}
+		}
+		if !matched {
+			return actionResponse{}, errdefs.InvalidParameter(fmt.Errorf("service not found: %s", strings.Join(req.Services, ",")))
+		}
+		return a.actionResult(projects[0], name, false, ""), nil
+	}
+
 	project, backend, name, err := a.resolveActionProject(ctx, projectName, req.Path)
 	if err != nil {
 		return actionResponse{}, err
@@ -307,6 +350,36 @@ func (a *serverApp) startProject(ctx context.Context, projectName string, req pr
 }
 
 func (a *serverApp) stopProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {
+	if req.Path != "" {
+		projects, backend, name, err := a.resolveActionProjects(ctx, projectName, req.Path)
+		if err != nil {
+			return actionResponse{}, err
+		}
+		timeout, err := durationPointerFromSeconds(req.TimeoutSeconds)
+		if err != nil {
+			return actionResponse{}, err
+		}
+		matched := false
+		for _, project := range projects {
+			services, ok := servicesForProject(project, req.Services)
+			if !ok {
+				continue
+			}
+			matched = true
+			if err := backend.Stop(ctx, name, composeapi.StopOptions{
+				Project:  project,
+				Services: services,
+				Timeout:  timeout,
+			}); err != nil {
+				return actionResponse{}, err
+			}
+		}
+		if !matched {
+			return actionResponse{}, errdefs.InvalidParameter(fmt.Errorf("service not found: %s", strings.Join(req.Services, ",")))
+		}
+		return a.actionResult(projects[0], name, false, ""), nil
+	}
+
 	project, backend, name, err := a.resolveActionProject(ctx, projectName, req.Path)
 	if err != nil {
 		return actionResponse{}, err
@@ -326,6 +399,37 @@ func (a *serverApp) stopProject(ctx context.Context, projectName string, req pro
 }
 
 func (a *serverApp) restartProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {
+	if req.Path != "" {
+		projects, backend, name, err := a.resolveActionProjects(ctx, projectName, req.Path)
+		if err != nil {
+			return actionResponse{}, err
+		}
+		timeout, err := durationPointerFromSeconds(req.TimeoutSeconds)
+		if err != nil {
+			return actionResponse{}, err
+		}
+		matched := false
+		for _, project := range projects {
+			services, ok := servicesForProject(project, req.Services)
+			if !ok {
+				continue
+			}
+			matched = true
+			if err := backend.Restart(ctx, name, composeapi.RestartOptions{
+				Project:  project,
+				Services: services,
+				Timeout:  timeout,
+				NoDeps:   req.NoDeps,
+			}); err != nil {
+				return actionResponse{}, err
+			}
+		}
+		if !matched {
+			return actionResponse{}, errdefs.InvalidParameter(fmt.Errorf("service not found: %s", strings.Join(req.Services, ",")))
+		}
+		return a.actionResult(projects[0], name, false, ""), nil
+	}
+
 	project, backend, name, err := a.resolveActionProject(ctx, projectName, req.Path)
 	if err != nil {
 		return actionResponse{}, err
@@ -585,9 +689,17 @@ func (a *serverApp) loadProject(ctx context.Context, requestPath string) (*types
 	if err != nil {
 		return nil, nil, err
 	}
-	ref, err := a.resolveProjectLoadRef(requestPath)
+	project, err := a.loadProjectWithBackend(ctx, backend, requestPath)
 	if err != nil {
 		return nil, nil, err
+	}
+	return project, backend, nil
+}
+
+func (a *serverApp) loadProjectWithBackend(ctx context.Context, backend composeapi.Compose, requestPath string) (*types.Project, error) {
+	ref, err := a.resolveProjectLoadRef(requestPath)
+	if err != nil {
+		return nil, err
 	}
 	project, err := backend.LoadProject(ctx, composeapi.ProjectLoadOptions{
 		WorkingDir:        ref.workingDir,
@@ -596,13 +708,49 @@ func (a *serverApp) loadProject(ctx context.Context, requestPath string) (*types
 		ProjectOptionsFns: runtimeProjectLoadOptions(),
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	project, err = runtimeProject(project)
 	if err != nil {
+		return nil, err
+	}
+	return project, nil
+}
+
+func (a *serverApp) loadProjectVariants(ctx context.Context, requestPath string) ([]*types.Project, composeapi.Compose, error) {
+	backend, err := a.backend()
+	if err != nil {
 		return nil, nil, err
 	}
-	return project, backend, nil
+	projects, err := a.loadProjectVariantsWithBackend(ctx, backend, requestPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	return projects, backend, nil
+}
+
+func (a *serverApp) loadProjectVariantsWithBackend(ctx context.Context, backend composeapi.Compose, requestPath string) ([]*types.Project, error) {
+	parts := splitPathList(requestPath)
+	if len(parts) <= 1 || !a.pathListHasMultipleRoots(parts) {
+		project, err := a.loadProjectWithBackend(ctx, backend, requestPath)
+		if err != nil {
+			return nil, err
+		}
+		return []*types.Project{project}, nil
+	}
+
+	projects := make([]*types.Project, 0, len(parts))
+	for _, part := range parts {
+		project, err := a.loadProjectWithBackend(ctx, backend, part)
+		if err != nil {
+			return nil, err
+		}
+		projects = append(projects, project)
+	}
+	if _, err := commonProjectName(projects); err != nil {
+		return nil, err
+	}
+	return projects, nil
 }
 
 func (a *serverApp) resolveActionProject(ctx context.Context, projectName, requestPath string) (*types.Project, composeapi.Compose, string, error) {
@@ -624,6 +772,21 @@ func (a *serverApp) resolveActionProject(ctx context.Context, projectName, reque
 		return nil, nil, "", errdefs.InvalidParameter(fmt.Errorf("project is required"))
 	}
 	return nil, backend, projectName, nil
+}
+
+func (a *serverApp) resolveActionProjects(ctx context.Context, projectName, requestPath string) ([]*types.Project, composeapi.Compose, string, error) {
+	projects, backend, err := a.loadProjectVariants(ctx, requestPath)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	name, err := commonProjectName(projects)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if projectName != "" && name != projectName {
+		return nil, nil, "", errdefs.InvalidParameter(fmt.Errorf("project %q does not match requested project %q", name, projectName))
+	}
+	return projects, backend, name, nil
 }
 
 func (a *serverApp) resolveProject(ctx context.Context, projectName, requestPath string) (*types.Project, composeapi.Compose, error) {
@@ -802,6 +965,19 @@ func mergeLoadedProjects(existing, next *types.Project) *types.Project {
 	return existing
 }
 
+func commonProjectName(projects []*types.Project) (string, error) {
+	if len(projects) == 0 {
+		return "", errdefs.NotFound(fmt.Errorf("project not found"))
+	}
+	name := projects[0].Name
+	for _, project := range projects[1:] {
+		if project.Name != name {
+			return "", errdefs.InvalidParameter(fmt.Errorf("project %q does not match requested project %q", project.Name, name))
+		}
+	}
+	return name, nil
+}
+
 func uniqueProjectConfigFiles(projects []*types.Project) []string {
 	configFiles := make([]string, 0)
 	for _, project := range projects {
@@ -812,6 +988,47 @@ func uniqueProjectConfigFiles(projects []*types.Project) []string {
 		}
 	}
 	return configFiles
+}
+
+func servicesForProject(project *types.Project, requested []string) ([]string, bool) {
+	if len(requested) == 0 {
+		return nil, true
+	}
+	services := make([]string, 0, len(requested))
+	for _, service := range requested {
+		if _, err := project.GetService(service); err == nil {
+			services = append(services, service)
+		}
+	}
+	return services, len(services) > 0
+}
+
+func splitPathList(requestPath string) []string {
+	raw := strings.Split(requestPath, ",")
+	parts := make([]string, 0, len(raw))
+	for _, part := range raw {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return parts
+}
+
+func (a *serverApp) pathListHasMultipleRoots(parts []string) bool {
+	roots := map[string]struct{}{}
+	for _, part := range parts {
+		resolved, err := a.resolvePathValue(a.config.rootDir, part)
+		if err != nil {
+			continue
+		}
+		root := resolved
+		if info, err := os.Stat(resolved); err != nil || !info.IsDir() {
+			root = filepath.Dir(resolved)
+		}
+		roots[root] = struct{}{}
+	}
+	return len(roots) > 1
 }
 
 func (a *serverApp) resolveProjectLoadRef(requestPath string) (projectLoadRef, error) {
