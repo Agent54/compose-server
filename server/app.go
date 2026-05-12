@@ -40,6 +40,7 @@ type serverApp struct {
 	backend      backendFactory
 	stats        statsRuntimeFactory
 	watches      *watchRegistry
+	logs         *logRegistry
 	builds       *buildRegistry
 	listOverride func(context.Context, composeapi.ListOptions) ([]composeapi.Stack, error)
 }
@@ -103,6 +104,7 @@ func newServerApp(config serveConfig, backend backendFactory, stats statsRuntime
 		backend: backend,
 		stats:   stats,
 		watches: newWatchRegistry(),
+		logs:    newLogRegistry(),
 		builds:  newBuildRegistry(),
 	}
 }
@@ -569,6 +571,23 @@ func (a *serverApp) streamLogs(ctx context.Context, projectName string, req logs
 		project: projectName,
 		stream:  stream,
 	}
+	ch, unsubscribe := a.logs.subscribe(projectName)
+	defer unsubscribe()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case msg, ok := <-ch:
+				if !ok {
+					return
+				}
+				consumer.sendMessage(msg)
+			}
+		}
+	}()
 	tail := req.Tail
 	if tail == "" {
 		tail = "all"
@@ -1220,15 +1239,19 @@ func (c *sseLogConsumer) Status(containerName, message string) {
 }
 
 func (c *sseLogConsumer) send(stream, source, message string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_ = c.stream.Send("message", string(mustMarshalSSE(sseMessage{
+	c.sendMessage(sseMessage{
 		Project: c.project,
 		Stream:  stream,
 		Source:  source,
 		Message: message,
 		Time:    time.Now().UTC(),
-	})))
+	})
+}
+
+func (c *sseLogConsumer) sendMessage(msg sseMessage) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_ = c.stream.Send("message", string(mustMarshalSSE(msg)))
 }
 
 func newLogConsumerWriter(consumer composeapi.LogConsumer, stream string) *logConsumerWriter {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,109 @@ type statsRequest struct {
 	NoStream bool
 	NoTrunc  bool
 	Format   string
+}
+
+type resourcesRequest struct {
+	Path        string
+	Services    []string
+	All         bool
+	Granularity string
+}
+
+type projectResourcesResponse struct {
+	Project        string               `json:"project"`
+	Granularity    string               `json:"granularity"`
+	Containers     []containerResources `json:"containers,omitempty"`
+	Services       []resourceAggregate  `json:"services,omitempty"`
+	ProjectSummary *resourceAggregate   `json:"projectSummary,omitempty"`
+}
+
+type containerResources struct {
+	ID          string              `json:"id"`
+	Name        string              `json:"name"`
+	Project     string              `json:"project"`
+	Service     string              `json:"service"`
+	State       string              `json:"state,omitempty"`
+	Status      string              `json:"status,omitempty"`
+	Image       string              `json:"image,omitempty"`
+	Usage       resourceUsage       `json:"usage"`
+	Limits      resourceLimits      `json:"limits"`
+	Utilization resourceUtilization `json:"utilization"`
+	Error       string              `json:"error,omitempty"`
+}
+
+type resourceAggregate struct {
+	Name        string              `json:"name"`
+	Project     string              `json:"project"`
+	Services    []string            `json:"services,omitempty"`
+	Containers  int                 `json:"containers"`
+	Usage       resourceUsage       `json:"usage"`
+	Limits      resourceLimits      `json:"limits"`
+	Utilization resourceUtilization `json:"utilization"`
+}
+
+type resourceUsage struct {
+	CPUPercent       float64 `json:"cpuPercent"`
+	MemoryBytes      float64 `json:"memoryBytes"`
+	MemoryLimitBytes float64 `json:"memoryLimitBytes"`
+	MemoryPercent    float64 `json:"memoryPercent"`
+	NetworkRxBytes   float64 `json:"networkRxBytes"`
+	NetworkTxBytes   float64 `json:"networkTxBytes"`
+	BlockReadBytes    float64 `json:"blockReadBytes"`
+	BlockWriteBytes   float64 `json:"blockWriteBytes"`
+	PidsCurrent       uint64  `json:"pidsCurrent,omitempty"`
+}
+
+type resourceLimits struct {
+	MemoryBytes            int64  `json:"memoryBytes,omitempty"`
+	MemoryReservationBytes int64  `json:"memoryReservationBytes,omitempty"`
+	MemorySwapBytes        int64  `json:"memorySwapBytes,omitempty"`
+	NanoCPUs               int64  `json:"nanoCpus,omitempty"`
+	CPUCores               float64 `json:"cpuCores,omitempty"`
+	CPUPeriod              int64  `json:"cpuPeriod,omitempty"`
+	CPUQuota               int64  `json:"cpuQuota,omitempty"`
+	CPUShares              int64  `json:"cpuShares,omitempty"`
+	CPUCount               int64  `json:"cpuCount,omitempty"`
+	CpusetCpus             string `json:"cpusetCpus,omitempty"`
+	PidsLimit              *int64 `json:"pidsLimit,omitempty"`
+}
+
+type resourceUtilization struct {
+	MemoryLimitPercent float64 `json:"memoryLimitPercent,omitempty"`
+	CPULimitPercent    float64 `json:"cpuLimitPercent,omitempty"`
+}
+
+type statsSnapshot struct {
+	entry containercmd.StatsEntry
+	err   error
+}
+
+func (a *serverApp) systemInfo(ctx context.Context) (any, error) {
+	if a.stats == nil {
+		return nil, fmt.Errorf("stats runtime unavailable")
+	}
+	runtime, err := a.stats()
+	if err != nil {
+		return nil, err
+	}
+	if runtime.client == nil {
+		return nil, fmt.Errorf("stats runtime unavailable")
+	}
+	return runtime.client.Info(ctx, mobyclient.InfoOptions{})
+}
+
+func (a *serverApp) systemDiskUsage(ctx context.Context) (any, error) {
+	if a.stats == nil {
+		return nil, fmt.Errorf("stats runtime unavailable")
+	}
+	runtime, err := a.stats()
+	if err != nil {
+		return nil, err
+	}
+	if runtime.client == nil {
+		return nil, fmt.Errorf("stats runtime unavailable")
+	}
+	return runtime.client.DiskUsage(ctx, mobyclient.DiskUsageOptions{})
 }
 
 func (a *serverApp) streamStats(ctx context.Context, projectName string, req statsRequest, w http.ResponseWriter) error {
@@ -116,6 +220,102 @@ func (a *serverApp) streamStats(ctx context.Context, projectName string, req sta
 	}
 }
 
+func (a *serverApp) projectResources(ctx context.Context, projectName string, req resourcesRequest) (projectResourcesResponse, error) {
+	project, _, name, err := a.resolvePSProject(ctx, projectName, req.Path)
+	if err != nil {
+		return projectResourcesResponse{}, err
+	}
+	if a.stats == nil {
+		return projectResourcesResponse{}, fmt.Errorf("stats runtime unavailable")
+	}
+	runtime, err := a.stats()
+	if err != nil {
+		return projectResourcesResponse{}, err
+	}
+	if runtime.client == nil {
+		return projectResourcesResponse{}, fmt.Errorf("stats runtime unavailable")
+	}
+
+	granularity := req.Granularity
+	if granularity == "" {
+		granularity = "all"
+	}
+	if !slices.Contains([]string{"all", "container", "service", "project"}, granularity) {
+		return projectResourcesResponse{}, errdefs.InvalidParameter(fmt.Errorf("unsupported granularity %q", granularity))
+	}
+
+	containers, err := listProjectContainers(ctx, runtime.client, name, req.All, req.Services)
+	if err != nil {
+		return projectResourcesResponse{}, err
+	}
+	if req.Path != "" && project != nil {
+		containers = filterContainersByConfigFiles(containers, project.ComposeFiles)
+	}
+
+	stats := collectStatsSnapshot(ctx, runtime.client, runtime.osType, containers)
+	out := projectResourcesResponse{
+		Project:     name,
+		Granularity: granularity,
+	}
+
+	containerRows := make([]containerResources, 0, len(containers))
+	for _, ctr := range containers {
+		row := containerResources{
+			ID:      ctr.ID,
+			Name:    ctr.ID,
+			Project: name,
+			Service: ctr.Labels[composeapi.ServiceLabel],
+			State:   string(ctr.State),
+			Status:  ctr.Status,
+			Image:   ctr.Image,
+		}
+		if len(ctr.Names) > 0 {
+			row.Name = strings.TrimPrefix(ctr.Names[0], "/")
+		}
+		if snapshot, ok := stats[ctr.ID]; ok {
+			row.Usage = usageFromStats(snapshot.entry)
+			if snapshot.entry.IsInvalid && snapshot.err != nil {
+				row.Error = snapshot.err.Error()
+			}
+		}
+		inspect, err := runtime.client.ContainerInspect(ctx, ctr.ID, mobyclient.ContainerInspectOptions{})
+		if err != nil {
+			row.Error = err.Error()
+		} else if inspect.Container.HostConfig != nil {
+			row.Limits = limitsFromResources(inspect.Container.HostConfig.Resources)
+		}
+		row.Utilization = utilizationFor(row.Usage, row.Limits)
+		containerRows = append(containerRows, row)
+	}
+	slices.SortFunc(containerRows, func(a, b containerResources) int {
+		if a.Service != b.Service {
+			if a.Service < b.Service {
+				return -1
+			}
+			return 1
+		}
+		if a.Name < b.Name {
+			return -1
+		}
+		if a.Name > b.Name {
+			return 1
+		}
+		return 0
+	})
+
+	if granularity == "all" || granularity == "container" {
+		out.Containers = containerRows
+	}
+	if granularity == "all" || granularity == "service" {
+		out.Services = aggregateResourcesByService(name, containerRows)
+	}
+	if granularity == "all" || granularity == "project" {
+		summary := aggregateResourcesForProject(name, containerRows)
+		out.ProjectSummary = &summary
+	}
+	return out, nil
+}
+
 func listProjectContainers(ctx context.Context, apiClient mobyclient.APIClient, projectName string, all bool, services []string) ([]containertypes.Summary, error) {
 	filters := mobyclient.Filters{}
 	filters.Add("label", fmt.Sprintf("%s=%s", composeapi.ProjectLabel, strings.ToLower(projectName)))
@@ -136,6 +336,184 @@ func listProjectContainers(ctx context.Context, apiClient mobyclient.APIClient, 
 		}
 	}
 	return filtered, nil
+}
+
+func filterContainersByConfigFiles(containers []containertypes.Summary, configFiles []string) []containertypes.Summary {
+	filtered := make([]containertypes.Summary, 0, len(containers))
+	for _, ctr := range containers {
+		if labelsContainAllConfigFiles(ctr.Labels[composeapi.ConfigFilesLabel], configFiles) {
+			filtered = append(filtered, ctr)
+		}
+	}
+	return filtered
+}
+
+func labelsContainAllConfigFiles(label string, configFiles []string) bool {
+	if label == "" {
+		return false
+	}
+	labelFiles := splitPathList(label)
+	for _, file := range configFiles {
+		if !slices.Contains(labelFiles, file) {
+			return false
+		}
+	}
+	return true
+}
+
+func collectStatsSnapshot(ctx context.Context, apiClient mobyclient.APIClient, osType string, containers []containertypes.Summary) map[string]statsSnapshot {
+	stats := make([]*containercmd.Stats, 0, len(containers))
+	waitFirst := &sync.WaitGroup{}
+	for _, ctr := range containers {
+		stat := containercmd.NewStats(ctr.ID)
+		stats = append(stats, stat)
+		waitFirst.Add(1)
+		go collectStats(ctx, stat, apiClient, false, waitFirst, osType)
+	}
+	waitFirst.Wait()
+
+	entries := make(map[string]statsSnapshot, len(stats))
+	for _, stat := range stats {
+		entry := stat.GetStatistics()
+		entries[stat.Container] = statsSnapshot{
+			entry: entry,
+			err:   stat.GetError(),
+		}
+	}
+	return entries
+}
+
+func usageFromStats(entry containercmd.StatsEntry) resourceUsage {
+	return resourceUsage{
+		CPUPercent:       entry.CPUPercentage,
+		MemoryBytes:      entry.Memory,
+		MemoryLimitBytes: entry.MemoryLimit,
+		MemoryPercent:    entry.MemoryPercentage,
+		NetworkRxBytes:   entry.NetworkRx,
+		NetworkTxBytes:   entry.NetworkTx,
+		BlockReadBytes:    entry.BlockRead,
+		BlockWriteBytes:   entry.BlockWrite,
+		PidsCurrent:       entry.PidsCurrent,
+	}
+}
+
+func limitsFromResources(resources containertypes.Resources) resourceLimits {
+	limits := resourceLimits{
+		MemoryBytes:            resources.Memory,
+		MemoryReservationBytes: resources.MemoryReservation,
+		MemorySwapBytes:        resources.MemorySwap,
+		NanoCPUs:               resources.NanoCPUs,
+		CPUCores:               cpuLimitCores(resources),
+		CPUPeriod:              resources.CPUPeriod,
+		CPUQuota:               resources.CPUQuota,
+		CPUShares:              resources.CPUShares,
+		CPUCount:               resources.CPUCount,
+		CpusetCpus:             resources.CpusetCpus,
+	}
+	if resources.PidsLimit != nil {
+		value := *resources.PidsLimit
+		limits.PidsLimit = &value
+	}
+	return limits
+}
+
+func cpuLimitCores(resources containertypes.Resources) float64 {
+	if resources.NanoCPUs > 0 {
+		return float64(resources.NanoCPUs) / 1e9
+	}
+	if resources.CPUQuota > 0 && resources.CPUPeriod > 0 {
+		return float64(resources.CPUQuota) / float64(resources.CPUPeriod)
+	}
+	return 0
+}
+
+func utilizationFor(usage resourceUsage, limits resourceLimits) resourceUtilization {
+	utilization := resourceUtilization{}
+	if limits.MemoryBytes > 0 {
+		utilization.MemoryLimitPercent = usage.MemoryBytes / float64(limits.MemoryBytes) * 100.0
+	} else if usage.MemoryLimitBytes > 0 {
+		utilization.MemoryLimitPercent = usage.MemoryBytes / usage.MemoryLimitBytes * 100.0
+	}
+	if limits.CPUCores > 0 {
+		utilization.CPULimitPercent = usage.CPUPercent / (limits.CPUCores * 100.0) * 100.0
+	}
+	return utilization
+}
+
+func aggregateResourcesByService(projectName string, containers []containerResources) []resourceAggregate {
+	byService := map[string]*resourceAggregate{}
+	for _, ctr := range containers {
+		service := ctr.Service
+		if service == "" {
+			service = ctr.Name
+		}
+		aggregate := byService[service]
+		if aggregate == nil {
+			aggregate = &resourceAggregate{Name: service, Project: projectName}
+			byService[service] = aggregate
+		}
+		addContainerToAggregate(aggregate, ctr)
+	}
+
+	names := make([]string, 0, len(byService))
+	for name := range byService {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]resourceAggregate, 0, len(names))
+	for _, name := range names {
+		aggregate := *byService[name]
+		aggregate.Utilization = utilizationFor(aggregate.Usage, aggregate.Limits)
+		out = append(out, aggregate)
+	}
+	return out
+}
+
+func aggregateResourcesForProject(projectName string, containers []containerResources) resourceAggregate {
+	aggregate := resourceAggregate{Name: projectName, Project: projectName}
+	seenServices := map[string]struct{}{}
+	for _, ctr := range containers {
+		addContainerToAggregate(&aggregate, ctr)
+		if ctr.Service != "" {
+			seenServices[ctr.Service] = struct{}{}
+		}
+	}
+	aggregate.Services = make([]string, 0, len(seenServices))
+	for service := range seenServices {
+		aggregate.Services = append(aggregate.Services, service)
+	}
+	sort.Strings(aggregate.Services)
+	aggregate.Utilization = utilizationFor(aggregate.Usage, aggregate.Limits)
+	return aggregate
+}
+
+func addContainerToAggregate(aggregate *resourceAggregate, ctr containerResources) {
+	aggregate.Containers++
+	aggregate.Usage.CPUPercent += ctr.Usage.CPUPercent
+	aggregate.Usage.MemoryBytes += ctr.Usage.MemoryBytes
+	aggregate.Usage.MemoryLimitBytes += ctr.Usage.MemoryLimitBytes
+	aggregate.Usage.NetworkRxBytes += ctr.Usage.NetworkRxBytes
+	aggregate.Usage.NetworkTxBytes += ctr.Usage.NetworkTxBytes
+	aggregate.Usage.BlockReadBytes += ctr.Usage.BlockReadBytes
+	aggregate.Usage.BlockWriteBytes += ctr.Usage.BlockWriteBytes
+	aggregate.Usage.PidsCurrent += ctr.Usage.PidsCurrent
+	if aggregate.Usage.MemoryLimitBytes > 0 {
+		aggregate.Usage.MemoryPercent = aggregate.Usage.MemoryBytes / aggregate.Usage.MemoryLimitBytes * 100.0
+	}
+	aggregate.Limits.MemoryBytes += ctr.Limits.MemoryBytes
+	aggregate.Limits.MemoryReservationBytes += ctr.Limits.MemoryReservationBytes
+	aggregate.Limits.MemorySwapBytes += ctr.Limits.MemorySwapBytes
+	aggregate.Limits.NanoCPUs += ctr.Limits.NanoCPUs
+	aggregate.Limits.CPUCores += ctr.Limits.CPUCores
+	aggregate.Limits.CPUShares += ctr.Limits.CPUShares
+	aggregate.Limits.CPUCount += ctr.Limits.CPUCount
+	if ctr.Limits.PidsLimit != nil {
+		if aggregate.Limits.PidsLimit == nil {
+			value := int64(0)
+			aggregate.Limits.PidsLimit = &value
+		}
+		*aggregate.Limits.PidsLimit += *ctr.Limits.PidsLimit
+	}
 }
 
 func statsEntryName(entry containercmd.StatsEntry) string {
