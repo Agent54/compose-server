@@ -17,6 +17,7 @@ import (
 
 	containercmd "github.com/docker/cli/cli/command/container"
 	dockerformatter "github.com/docker/cli/cli/command/formatter"
+	"github.com/docker/docker/errdefs"
 	"github.com/docker/go-units"
 	containertypes "github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
