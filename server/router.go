@@ -305,6 +305,22 @@ func (r *composeRouter) commitProject(ctx context.Context, w http.ResponseWriter
 	return writeJSON(w, http.StatusOK, resp)
 }
 
+func (r *composeRouter) listExecs(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
+	return writeJSON(w, http.StatusOK, r.app.listExecs(vars["project"]))
+}
+
+func (r *composeRouter) execProject(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
+	var body containerExecRequest
+	if err := decodeJSONBody(req, &body); err != nil {
+		return err
+	}
+	resp, err := r.app.execInContainer(ctx, vars["project"], body)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusAccepted, resp)
+}
+
 func (r *composeRouter) eventsProject(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
 	if err := httputils.ParseForm(req); err != nil {
 		return err
@@ -430,6 +446,18 @@ func (r *composeRouter) topProject(ctx context.Context, w http.ResponseWriter, r
 		return err
 	}
 	return writeJSON(w, http.StatusOK, containers)
+}
+
+func (r *composeRouter) killProcess(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
+	var body processKillRequest
+	if err := decodeJSONBody(req, &body); err != nil {
+		return err
+	}
+	resp, err := r.app.killContainerProcess(ctx, vars["project"], body)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, resp)
 }
 
 func (r *composeRouter) volumesProject(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
@@ -646,6 +674,33 @@ func serveRoutes() []routeSpec {
 		},
 		{
 			method:  http.MethodGet,
+			path:    "/exec/{project}",
+			summary: "List exec processes started through this compose server instance",
+			handler: func(r *composeRouter) httputils.APIFunc { return r.listExecs },
+		},
+		{
+			method:  http.MethodPost,
+			path:    "/exec/{project}",
+			summary: "Execute a command in a project container and mix stdout/stderr into the logs SSE stream",
+			bodyFields: []bodyFieldSpec{
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
+				{Name: "container", Type: "string", Description: "Optional container id or name; otherwise service is required"},
+				{Name: "service", Type: "string", Description: "Service name when container is not specified"},
+				{Name: "index", Type: "integer", Description: "Replica index; defaults to 1"},
+				{Name: "command", Type: "string[]", Description: "Command argv to execute"},
+				{Name: "shell", Type: "string", Description: "Shell command; converted to shellExecutable -lc"},
+				{Name: "shellExecutable", Type: "string", Description: "Shell executable for shell; defaults to /bin/sh"},
+				{Name: "workingDir", Type: "string", Description: "Working directory inside the container"},
+				{Name: "user", Type: "string", Description: "User inside the container"},
+				{Name: "env", Type: "string[]", Description: "Environment variables KEY=VALUE"},
+				{Name: "privileged", Type: "boolean", Description: "Run exec privileged"},
+				{Name: "tty", Type: "boolean", Description: "Allocate a TTY"},
+				{Name: "startStopped", Type: "boolean", Description: "Start a stopped container before exec; defaults to true"},
+			},
+			handler: func(r *composeRouter) httputils.APIFunc { return r.execProject },
+		},
+		{
+			method:  http.MethodGet,
 			path:    "/ps/{project}",
 			summary: "List project containers as JSON",
 			queryParams: []queryParamSpec{
@@ -681,6 +736,21 @@ func serveRoutes() []routeSpec {
 				{Name: "service", Type: "string", Repeated: true, Description: "Optional service names"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.topProject },
+		},
+		{
+			method:  http.MethodPost,
+			path:    "/top/{project}/kill",
+			summary: "Send a signal to a process inside a project container; hard=true uses SIGKILL",
+			bodyFields: []bodyFieldSpec{
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
+				{Name: "container", Type: "string", Description: "Optional container id or name; otherwise service is required"},
+				{Name: "service", Type: "string", Description: "Service name when container is not specified"},
+				{Name: "index", Type: "integer", Description: "Replica index; defaults to 1"},
+				{Name: "pid", Type: "integer", Description: "PID from /top/{project} output"},
+				{Name: "signal", Type: "string", Description: "Signal to send; defaults to SIGTERM"},
+				{Name: "hard", Type: "boolean", Description: "Send SIGKILL regardless of signal"},
+			},
+			handler: func(r *composeRouter) httputils.APIFunc { return r.killProcess },
 		},
 		{
 			method:  http.MethodGet,

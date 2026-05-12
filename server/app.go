@@ -41,6 +41,7 @@ type serverApp struct {
 	stats        statsRuntimeFactory
 	watches      *watchRegistry
 	logs         *logRegistry
+	execs        *execRegistry
 	builds       *buildRegistry
 	listOverride func(context.Context, composeapi.ListOptions) ([]composeapi.Stack, error)
 }
@@ -105,6 +106,7 @@ func newServerApp(config serveConfig, backend backendFactory, stats statsRuntime
 		stats:   stats,
 		watches: newWatchRegistry(),
 		logs:    newLogRegistry(),
+		execs:   newExecRegistry(),
 		builds:  newBuildRegistry(),
 	}
 }
