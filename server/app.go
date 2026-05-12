@@ -903,7 +903,7 @@ func watchModeUpOptions(project *types.Project, build composeapi.BuildOptions, c
 			Build:                &buildCopy,
 			Services:             project.ServiceNames(),
 			Recreate:             composeapi.RecreateDiverged,
-			RecreateDependencies: composeapi.RecreateNever,
+			RecreateDependencies: composeapi.RecreateDiverged,
 			Inherit:              true,
 		},
 		Start: composeapi.StartOptions{
