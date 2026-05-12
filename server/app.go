@@ -532,6 +532,59 @@ func (a *serverApp) psProject(ctx context.Context, projectName string, path stri
 	return containers, nil
 }
 
+type logsRequest struct {
+	Path       string
+	Services   []string
+	Follow     bool
+	Index      int
+	Tail       string
+	Since      string
+	Until      string
+	Timestamps bool
+}
+
+func (a *serverApp) streamLogs(ctx context.Context, projectName string, req logsRequest, w http.ResponseWriter) error {
+	if req.Index > 0 && len(req.Services) != 1 {
+		return errdefs.InvalidParameter(fmt.Errorf("index requires exactly one service"))
+	}
+	project, backend, name, err := a.resolvePSProject(ctx, projectName, req.Path)
+	if err != nil {
+		return err
+	}
+
+	services := slices.Clone(req.Services)
+	if project != nil && len(services) == 0 {
+		for serviceName, service := range project.Services {
+			if service.Attach == nil || *service.Attach {
+				services = append(services, serviceName)
+			}
+		}
+	}
+
+	stream, err := newTextSSEStream(w)
+	if err != nil {
+		return err
+	}
+	consumer := &sseLogConsumer{
+		project: projectName,
+		stream:  stream,
+	}
+	tail := req.Tail
+	if tail == "" {
+		tail = "all"
+	}
+	return backend.Logs(ctx, name, consumer, composeapi.LogOptions{
+		Project:    project,
+		Services:   services,
+		Follow:     req.Follow,
+		Index:      req.Index,
+		Tail:       tail,
+		Since:      req.Since,
+		Until:      req.Until,
+		Timestamps: req.Timestamps,
+	})
+}
+
 func (a *serverApp) resolvePSProject(ctx context.Context, projectName, requestPath string) (*types.Project, composeapi.Compose, string, error) {
 	if requestPath != "" {
 		return a.resolveActionProject(ctx, projectName, requestPath)
@@ -1146,6 +1199,36 @@ type logConsumerWriter struct {
 	stream   string
 	mu       sync.Mutex
 	pending  string
+}
+
+type sseLogConsumer struct {
+	project string
+	stream  *textSSEStream
+	mu      sync.Mutex
+}
+
+func (c *sseLogConsumer) Log(containerName, message string) {
+	c.send("stdout", containerName, message)
+}
+
+func (c *sseLogConsumer) Err(containerName, message string) {
+	c.send("stderr", containerName, message)
+}
+
+func (c *sseLogConsumer) Status(containerName, message string) {
+	c.send("status", containerName, message)
+}
+
+func (c *sseLogConsumer) send(stream, source, message string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_ = c.stream.Send("message", string(mustMarshalSSE(sseMessage{
+		Project: c.project,
+		Stream:  stream,
+		Source:  source,
+		Message: message,
+		Time:    time.Now().UTC(),
+	})))
 }
 
 func newLogConsumerWriter(consumer composeapi.LogConsumer, stream string) *logConsumerWriter {
