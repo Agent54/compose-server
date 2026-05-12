@@ -45,6 +45,7 @@ type serverApp struct {
 }
 
 type upRequest struct {
+	Project  string   `json:"project,omitempty"`
 	Path     string   `json:"path,omitempty"`
 	Services []string `json:"services,omitempty"`
 	Build    bool     `json:"build,omitempty"`
@@ -52,7 +53,8 @@ type upRequest struct {
 }
 
 type watchRequest struct {
-	Path string `json:"path,omitempty"`
+	Path     string   `json:"path,omitempty"`
+	Services []string `json:"services,omitempty"`
 }
 
 type projectActionRequest struct {
@@ -151,14 +153,14 @@ func (a *serverApp) listStacks(ctx context.Context, options composeapi.ListOptio
 
 func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionResponse, error) {
 	if req.Watch {
-		projectName, projects, configFiles, err := a.resolveUpWatchProjects(ctx, req.Path)
+		projectName, projects, configFiles, err := a.resolveUpWatchProjects(ctx, req.Project, req.Path, req.Services)
 		if err != nil {
 			return actionResponse{}, err
 		}
 		for _, project := range projects {
 			prepareProjectForWatch(project)
 		}
-		if err := a.startWatch(projectName, projects); err != nil {
+		if err := a.startWatch(projectName, projects, req.Services); err != nil {
 			return actionResponse{}, err
 		}
 		return actionResponse{
@@ -170,11 +172,11 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 		}, nil
 	}
 
-	projects, backend, err := a.loadProjectVariants(ctx, req.Path)
+	projects, backend, projectName, err := a.resolveUpProjects(ctx, req.Project, req.Path)
 	if err != nil {
 		return actionResponse{}, err
 	}
-	projectName, err := commonProjectName(projects)
+	projects, err = filterProjectVariantsByServices(projects, req.Services)
 	if err != nil {
 		return actionResponse{}, err
 	}
@@ -187,7 +189,12 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 			a.builds.finish(buildID, false)
 			return actionResponse{}, err
 		}
-		projects, err = a.loadProjectVariantsWithBackend(ctx, backend, req.Path)
+		projects, _, err = a.resolveProjectVariantsWithBackend(ctx, backend, req.Project, req.Path)
+		if err != nil {
+			a.builds.finish(buildID, false)
+			return actionResponse{}, err
+		}
+		projects, err = filterProjectVariantsByServices(projects, req.Services)
 		if err != nil {
 			a.builds.finish(buildID, false)
 			return actionResponse{}, err
@@ -195,13 +202,11 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 	}
 
 	var upErr error
-	matched := false
 	for _, project := range projects {
 		services, ok := servicesForProject(project, req.Services)
 		if !ok {
 			continue
 		}
-		matched = true
 		var buildPtr *composeapi.BuildOptions
 		if req.Build {
 			build := a.newBuildOptionsForServices(project, services)
@@ -224,9 +229,6 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 			upErr = err
 			break
 		}
-	}
-	if !matched {
-		return actionResponse{}, errdefs.InvalidParameter(fmt.Errorf("service not found: %s", strings.Join(req.Services, ",")))
 	}
 	if buildID != "" {
 		a.builds.finish(buildID, upErr == nil)
@@ -287,14 +289,14 @@ func (a *serverApp) renderProjectConfig(ctx context.Context, projectName, reques
 }
 
 func (a *serverApp) restartWatch(ctx context.Context, projectName string, req watchRequest) (actionResponse, error) {
-	projects, configFiles, err := a.resolveWatchProjects(ctx, projectName, req.Path)
+	projects, configFiles, err := a.resolveWatchProjects(ctx, projectName, req.Path, req.Services)
 	if err != nil {
 		return actionResponse{}, err
 	}
 	for _, project := range projects {
 		prepareProjectForWatch(project)
 	}
-	if err := a.startWatch(projectName, projects); err != nil {
+	if err := a.startWatch(projectName, projects, req.Services); err != nil {
 		return actionResponse{}, err
 	}
 	return actionResponse{
@@ -307,39 +309,11 @@ func (a *serverApp) restartWatch(ctx context.Context, projectName string, req wa
 }
 
 func (a *serverApp) startProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {
-	if req.Path != "" {
-		projects, backend, name, err := a.resolveActionProjects(ctx, projectName, req.Path)
-		if err != nil {
-			return actionResponse{}, err
-		}
-		waitTimeout, err := durationFromSeconds(req.WaitTimeoutSecs)
-		if err != nil {
-			return actionResponse{}, err
-		}
-		matched := false
-		for _, project := range projects {
-			services, ok := servicesForProject(project, req.Services)
-			if !ok {
-				continue
-			}
-			matched = true
-			if err := backend.Start(ctx, name, composeapi.StartOptions{
-				Project:     project,
-				AttachTo:    services,
-				Services:    services,
-				Wait:        req.Wait,
-				WaitTimeout: waitTimeout,
-			}); err != nil {
-				return actionResponse{}, err
-			}
-		}
-		if !matched {
-			return actionResponse{}, errdefs.InvalidParameter(fmt.Errorf("service not found: %s", strings.Join(req.Services, ",")))
-		}
-		return a.actionResult(projects[0], name, false, ""), nil
+	projects, backend, name, err := a.resolveActionProjects(ctx, projectName, req.Path)
+	if err != nil {
+		return actionResponse{}, err
 	}
-
-	project, backend, name, err := a.resolveActionProject(ctx, projectName, req.Path)
+	projects, err = filterProjectVariantsByServices(projects, req.Services)
 	if err != nil {
 		return actionResponse{}, err
 	}
@@ -347,50 +321,27 @@ func (a *serverApp) startProject(ctx context.Context, projectName string, req pr
 	if err != nil {
 		return actionResponse{}, err
 	}
-	if err := backend.Start(ctx, name, composeapi.StartOptions{
-		Project:     project,
-		AttachTo:    req.Services,
-		Services:    req.Services,
-		Wait:        req.Wait,
-		WaitTimeout: waitTimeout,
-	}); err != nil {
-		return actionResponse{}, err
+	for _, project := range projects {
+		services, _ := servicesForProject(project, req.Services)
+		if err := backend.Start(ctx, name, composeapi.StartOptions{
+			Project:     project,
+			AttachTo:    services,
+			Services:    services,
+			Wait:        req.Wait,
+			WaitTimeout: waitTimeout,
+		}); err != nil {
+			return actionResponse{}, err
+		}
 	}
-	return a.actionResult(project, name, false, ""), nil
+	return a.actionResult(projects[0], name, false, ""), nil
 }
 
 func (a *serverApp) stopProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {
-	if req.Path != "" {
-		projects, backend, name, err := a.resolveActionProjects(ctx, projectName, req.Path)
-		if err != nil {
-			return actionResponse{}, err
-		}
-		timeout, err := durationPointerFromSeconds(req.TimeoutSeconds)
-		if err != nil {
-			return actionResponse{}, err
-		}
-		matched := false
-		for _, project := range projects {
-			services, ok := servicesForProject(project, req.Services)
-			if !ok {
-				continue
-			}
-			matched = true
-			if err := backend.Stop(ctx, name, composeapi.StopOptions{
-				Project:  project,
-				Services: services,
-				Timeout:  timeout,
-			}); err != nil {
-				return actionResponse{}, err
-			}
-		}
-		if !matched {
-			return actionResponse{}, errdefs.InvalidParameter(fmt.Errorf("service not found: %s", strings.Join(req.Services, ",")))
-		}
-		return a.actionResult(projects[0], name, false, ""), nil
+	projects, backend, name, err := a.resolveActionProjects(ctx, projectName, req.Path)
+	if err != nil {
+		return actionResponse{}, err
 	}
-
-	project, backend, name, err := a.resolveActionProject(ctx, projectName, req.Path)
+	projects, err = filterProjectVariantsByServices(projects, req.Services)
 	if err != nil {
 		return actionResponse{}, err
 	}
@@ -398,49 +349,25 @@ func (a *serverApp) stopProject(ctx context.Context, projectName string, req pro
 	if err != nil {
 		return actionResponse{}, err
 	}
-	if err := backend.Stop(ctx, name, composeapi.StopOptions{
-		Project:  project,
-		Services: req.Services,
-		Timeout:  timeout,
-	}); err != nil {
-		return actionResponse{}, err
+	for _, project := range projects {
+		services, _ := servicesForProject(project, req.Services)
+		if err := backend.Stop(ctx, name, composeapi.StopOptions{
+			Project:  project,
+			Services: services,
+			Timeout:  timeout,
+		}); err != nil {
+			return actionResponse{}, err
+		}
 	}
-	return a.actionResult(project, name, false, ""), nil
+	return a.actionResult(projects[0], name, false, ""), nil
 }
 
 func (a *serverApp) restartProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {
-	if req.Path != "" {
-		projects, backend, name, err := a.resolveActionProjects(ctx, projectName, req.Path)
-		if err != nil {
-			return actionResponse{}, err
-		}
-		timeout, err := durationPointerFromSeconds(req.TimeoutSeconds)
-		if err != nil {
-			return actionResponse{}, err
-		}
-		matched := false
-		for _, project := range projects {
-			services, ok := servicesForProject(project, req.Services)
-			if !ok {
-				continue
-			}
-			matched = true
-			if err := backend.Restart(ctx, name, composeapi.RestartOptions{
-				Project:  project,
-				Services: services,
-				Timeout:  timeout,
-				NoDeps:   req.NoDeps,
-			}); err != nil {
-				return actionResponse{}, err
-			}
-		}
-		if !matched {
-			return actionResponse{}, errdefs.InvalidParameter(fmt.Errorf("service not found: %s", strings.Join(req.Services, ",")))
-		}
-		return a.actionResult(projects[0], name, false, ""), nil
+	projects, backend, name, err := a.resolveActionProjects(ctx, projectName, req.Path)
+	if err != nil {
+		return actionResponse{}, err
 	}
-
-	project, backend, name, err := a.resolveActionProject(ctx, projectName, req.Path)
+	projects, err = filterProjectVariantsByServices(projects, req.Services)
 	if err != nil {
 		return actionResponse{}, err
 	}
@@ -448,19 +375,26 @@ func (a *serverApp) restartProject(ctx context.Context, projectName string, req 
 	if err != nil {
 		return actionResponse{}, err
 	}
-	if err := backend.Restart(ctx, name, composeapi.RestartOptions{
-		Project:  project,
-		Services: req.Services,
-		Timeout:  timeout,
-		NoDeps:   req.NoDeps,
-	}); err != nil {
-		return actionResponse{}, err
+	for _, project := range projects {
+		services, _ := servicesForProject(project, req.Services)
+		if err := backend.Restart(ctx, name, composeapi.RestartOptions{
+			Project:  project,
+			Services: services,
+			Timeout:  timeout,
+			NoDeps:   req.NoDeps,
+		}); err != nil {
+			return actionResponse{}, err
+		}
 	}
-	return a.actionResult(project, name, false, ""), nil
+	return a.actionResult(projects[0], name, false, ""), nil
 }
 
 func (a *serverApp) downProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {
-	project, backend, name, err := a.resolveActionProject(ctx, projectName, req.Path)
+	projects, backend, name, err := a.resolveActionProjects(ctx, projectName, req.Path)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	projects, err = filterProjectVariantsByServices(projects, req.Services)
 	if err != nil {
 		return actionResponse{}, err
 	}
@@ -468,17 +402,20 @@ func (a *serverApp) downProject(ctx context.Context, projectName string, req pro
 	if err != nil {
 		return actionResponse{}, err
 	}
-	if err := backend.Down(ctx, name, composeapi.DownOptions{
-		RemoveOrphans: req.RemoveOrphans,
-		Project:       project,
-		Timeout:       timeout,
-		Images:        req.Images,
-		Volumes:       req.Volumes,
-		Services:      req.Services,
-	}); err != nil {
-		return actionResponse{}, err
+	for _, project := range projects {
+		services, _ := servicesForProject(project, req.Services)
+		if err := backend.Down(ctx, name, composeapi.DownOptions{
+			RemoveOrphans: req.RemoveOrphans,
+			Project:       project,
+			Timeout:       timeout,
+			Images:        req.Images,
+			Volumes:       req.Volumes,
+			Services:      services,
+		}); err != nil {
+			return actionResponse{}, err
+		}
 	}
-	return a.actionResult(project, name, false, ""), nil
+	return a.actionResult(projects[0], name, false, ""), nil
 }
 
 func (a *serverApp) pauseProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {
@@ -674,12 +611,16 @@ func (a *serverApp) streamWatch(ctx context.Context, projectName string, w http.
 	return a.watches.stream(ctx, projectName, w)
 }
 
-func (a *serverApp) startWatch(projectName string, projects []*types.Project) error {
+func (a *serverApp) startWatch(projectName string, projects []*types.Project, requestedServices []string) error {
 	return a.watches.start(projectName, func(ctx context.Context, consumer composeapi.LogConsumer) error {
 		eg, ctx := errgroup.WithContext(ctx)
 		for _, project := range projects {
 			project := project
 			eg.Go(func() error {
+				services, ok := servicesForProject(project, requestedServices)
+				if !ok {
+					return nil
+				}
 				backend, err := a.backend(
 					composepkg.WithOutputStream(newLogConsumerWriter(consumer, "stdout")),
 					composepkg.WithErrorStream(newLogConsumerWriter(consumer, "stderr")),
@@ -687,7 +628,7 @@ func (a *serverApp) startWatch(projectName string, projects []*types.Project) er
 				if err != nil {
 					return err
 				}
-				return backend.Up(ctx, project, watchModeUpOptions(project, a.newBuildOptions(project), consumer))
+				return backend.Up(ctx, project, watchModeUpOptions(project, a.newBuildOptionsForServices(project, services), consumer, services))
 			})
 		}
 		return eg.Wait()
@@ -785,18 +726,61 @@ func (a *serverApp) resolveActionProject(ctx context.Context, projectName, reque
 }
 
 func (a *serverApp) resolveActionProjects(ctx context.Context, projectName, requestPath string) ([]*types.Project, composeapi.Compose, string, error) {
-	projects, backend, err := a.loadProjectVariants(ctx, requestPath)
+	backend, err := a.backend()
 	if err != nil {
 		return nil, nil, "", err
 	}
-	name, err := commonProjectName(projects)
+	projects, name, err := a.resolveProjectVariantsWithBackend(ctx, backend, projectName, requestPath)
 	if err != nil {
+		if requestPath == "" && projectName != "" && errdefs.IsNotFound(err) {
+			return []*types.Project{nil}, backend, projectName, nil
+		}
 		return nil, nil, "", err
-	}
-	if projectName != "" && name != projectName {
-		return nil, nil, "", errdefs.InvalidParameter(fmt.Errorf("project %q does not match requested project %q", name, projectName))
 	}
 	return projects, backend, name, nil
+}
+
+func (a *serverApp) resolveUpProjects(ctx context.Context, projectName, requestPath string) ([]*types.Project, composeapi.Compose, string, error) {
+	backend, err := a.backend()
+	if err != nil {
+		return nil, nil, "", err
+	}
+	projects, name, err := a.resolveProjectVariantsWithBackend(ctx, backend, projectName, requestPath)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return projects, backend, name, nil
+}
+
+func (a *serverApp) resolveProjectVariantsWithBackend(ctx context.Context, backend composeapi.Compose, projectName, requestPath string) ([]*types.Project, string, error) {
+	if requestPath != "" {
+		projects, err := a.loadProjectVariantsWithBackend(ctx, backend, requestPath)
+		if err != nil {
+			return nil, "", err
+		}
+		name, err := commonProjectName(projects)
+		if err != nil {
+			return nil, "", err
+		}
+		if projectName != "" && name != projectName {
+			return nil, "", errdefs.InvalidParameter(fmt.Errorf("project %q does not match requested project %q", name, projectName))
+		}
+		return projects, name, nil
+	}
+
+	if projectName != "" {
+		projects, err := a.findProjectVariantsByName(ctx, backend, projectName)
+		if err != nil {
+			return nil, "", err
+		}
+		return projects, projectName, nil
+	}
+
+	project, err := a.loadProjectWithBackend(ctx, backend, "")
+	if err != nil {
+		return nil, "", err
+	}
+	return []*types.Project{project}, project.Name, nil
 }
 
 func (a *serverApp) resolveProject(ctx context.Context, projectName, requestPath string) (*types.Project, composeapi.Compose, error) {
@@ -826,44 +810,28 @@ func (a *serverApp) resolveProject(ctx context.Context, projectName, requestPath
 	return project, backend, nil
 }
 
-func (a *serverApp) resolveUpWatchProjects(ctx context.Context, requestPath string) (string, []*types.Project, string, error) {
-	project, _, err := a.loadProject(ctx, requestPath)
+func (a *serverApp) resolveUpWatchProjects(ctx context.Context, projectName, requestPath string, services []string) (string, []*types.Project, string, error) {
+	projects, _, name, err := a.resolveUpProjects(ctx, projectName, requestPath)
 	if err != nil {
 		return "", nil, "", err
 	}
-	return project.Name, []*types.Project{project}, strings.Join(project.ComposeFiles, ","), nil
+	projects, err = filterProjectVariantsByServices(projects, services)
+	if err != nil {
+		return "", nil, "", err
+	}
+	return name, projects, strings.Join(uniqueProjectConfigFiles(projects), ","), nil
 }
 
-func (a *serverApp) resolveWatchProjects(ctx context.Context, projectName, requestPath string) ([]*types.Project, string, error) {
-	if requestPath != "" {
-		project, _, err := a.loadProject(ctx, requestPath)
-		if err != nil {
-			return nil, "", err
-		}
-		if projectName != "" && project.Name != projectName {
-			return nil, "", errdefs.InvalidParameter(fmt.Errorf("project %q does not match requested watch resource %q", project.Name, projectName))
-		}
-		return []*types.Project{project}, strings.Join(project.ComposeFiles, ","), nil
-	}
-
-	backend, err := a.backend()
+func (a *serverApp) resolveWatchProjects(ctx context.Context, projectName, requestPath string, services []string) ([]*types.Project, string, error) {
+	projects, _, _, err := a.resolveUpProjects(ctx, projectName, requestPath)
 	if err != nil {
 		return nil, "", err
 	}
-	projects, err := a.findProjectVariantsByName(ctx, backend, projectName)
+	projects, err = filterProjectVariantsByServices(projects, services)
 	if err != nil {
 		return nil, "", err
 	}
-
-	configFiles := make([]string, 0)
-	for _, project := range projects {
-		for _, file := range project.ComposeFiles {
-			if !slices.Contains(configFiles, file) {
-				configFiles = append(configFiles, file)
-			}
-		}
-	}
-	return projects, strings.Join(configFiles, ","), nil
+	return projects, strings.Join(uniqueProjectConfigFiles(projects), ","), nil
 }
 
 func (a *serverApp) findFirstProjectByName(ctx context.Context, backend composeapi.Compose, projectName string) (*types.Project, error) {
@@ -991,6 +959,9 @@ func commonProjectName(projects []*types.Project) (string, error) {
 func uniqueProjectConfigFiles(projects []*types.Project) []string {
 	configFiles := make([]string, 0)
 	for _, project := range projects {
+		if project == nil {
+			continue
+		}
 		for _, file := range project.ComposeFiles {
 			if !slices.Contains(configFiles, file) {
 				configFiles = append(configFiles, file)
@@ -1001,6 +972,9 @@ func uniqueProjectConfigFiles(projects []*types.Project) []string {
 }
 
 func servicesForProject(project *types.Project, requested []string) ([]string, bool) {
+	if project == nil {
+		return requested, true
+	}
 	if len(requested) == 0 {
 		return nil, true
 	}
@@ -1011,6 +985,22 @@ func servicesForProject(project *types.Project, requested []string) ([]string, b
 		}
 	}
 	return services, len(services) > 0
+}
+
+func filterProjectVariantsByServices(projects []*types.Project, requested []string) ([]*types.Project, error) {
+	if len(requested) == 0 {
+		return projects, nil
+	}
+	filtered := make([]*types.Project, 0, len(projects))
+	for _, project := range projects {
+		if _, ok := servicesForProject(project, requested); ok {
+			filtered = append(filtered, project)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil, errdefs.InvalidParameter(fmt.Errorf("service not found: %s", strings.Join(requested, ",")))
+	}
+	return filtered, nil
 }
 
 func splitPathList(requestPath string) []string {
@@ -1105,9 +1095,16 @@ func (a *serverApp) newBuildOptions(project *types.Project) composeapi.BuildOpti
 func (a *serverApp) newBuildOptionsForServices(project *types.Project, services []string) composeapi.BuildOptions {
 	return composeapi.BuildOptions{
 		Progress: "plain",
-		Services: services,
+		Services: serviceSelection(project, services),
 		Deps:     true,
 	}
+}
+
+func serviceSelection(project *types.Project, services []string) []string {
+	if len(services) == 0 {
+		return project.ServiceNames()
+	}
+	return services
 }
 
 func prepareProjectForWatch(project *types.Project) {
@@ -1127,12 +1124,13 @@ func runtimeProjectLoadOptions() []composecli.ProjectOptionsFn {
 	return []composecli.ProjectOptionsFn{composecli.WithoutEnvironmentResolution}
 }
 
-func watchModeUpOptions(project *types.Project, build composeapi.BuildOptions, consumer composeapi.LogConsumer) composeapi.UpOptions {
+func watchModeUpOptions(project *types.Project, build composeapi.BuildOptions, consumer composeapi.LogConsumer, services []string) composeapi.UpOptions {
 	buildCopy := build
+	selectedServices := serviceSelection(project, services)
 	return composeapi.UpOptions{
 		Create: composeapi.CreateOptions{
 			Build:                &buildCopy,
-			Services:             project.ServiceNames(),
+			Services:             selectedServices,
 			Recreate:             composeapi.RecreateDiverged,
 			RecreateDependencies: composeapi.RecreateDiverged,
 			Inherit:              true,
@@ -1140,9 +1138,9 @@ func watchModeUpOptions(project *types.Project, build composeapi.BuildOptions, c
 		Start: composeapi.StartOptions{
 			Project:  project,
 			Attach:   consumer,
-			AttachTo: project.ServiceNames(),
+			AttachTo: selectedServices,
 			Watch:    true,
-			Services: project.ServiceNames(),
+			Services: selectedServices,
 		},
 	}
 }
