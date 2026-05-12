@@ -817,7 +817,7 @@ func (s *composeService) initialSyncFiles(service types.ServiceConfig, trigger t
 		return initialSyncDirectory(trigger, service, ignore)
 	case mode.IsRegular():
 		// process file
-		if !shouldIgnore(filepath.Base(trigger.Path), ignore) && !checkIfPathAlreadyBindMounted(trigger.Path, service.Volumes) {
+		if !shouldIgnore(trigger.Path, ignore) && !checkIfPathAlreadyBindMounted(trigger.Path, service.Volumes) {
 			return []*sync.PathMapping{{
 				HostPath:      trigger.Path,
 				ContainerPath: trigger.Target,
@@ -840,7 +840,7 @@ func initialSyncDirectory(trigger types.Trigger, service types.ServiceConfig, ig
 			// walk starts at the root directory
 			return nil
 		}
-		if shouldIgnore(filepath.Base(path), ignore) || checkIfPathAlreadyBindMounted(path, service.Volumes) {
+		if shouldIgnore(path, ignore) || checkIfPathAlreadyBindMounted(path, service.Volumes) {
 			// By definition sync ignores bind mounted paths
 			if d.IsDir() {
 				// skip folder
