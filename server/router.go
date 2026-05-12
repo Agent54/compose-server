@@ -162,6 +162,22 @@ func (r *composeRouter) listProjects(ctx context.Context, w http.ResponseWriter,
 	return writeJSON(w, http.StatusOK, projects)
 }
 
+func (r *composeRouter) systemInfo(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
+	info, err := r.app.systemInfo(ctx)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, info)
+}
+
+func (r *composeRouter) systemDiskUsage(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
+	usage, err := r.app.systemDiskUsage(ctx)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, usage)
+}
+
 func (r *composeRouter) upProject(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
 	var body upRequest
 	if err := decodeJSONBody(req, &body); err != nil {
@@ -336,6 +352,26 @@ func (r *composeRouter) statsProject(ctx context.Context, w http.ResponseWriter,
 	return r.app.streamStats(ctx, vars["project"], options, w)
 }
 
+func (r *composeRouter) resourcesProject(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
+	if err := httputils.ParseForm(req); err != nil {
+		return err
+	}
+	all, err := parseOptionalBool(req.Form.Get("all"))
+	if err != nil {
+		return err
+	}
+	resources, err := r.app.projectResources(ctx, vars["project"], resourcesRequest{
+		Path:        req.Form.Get("path"),
+		Services:    req.Form["service"],
+		All:         all,
+		Granularity: req.Form.Get("granularity"),
+	})
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, resources)
+}
+
 func (r *composeRouter) psProject(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
 	if err := httputils.ParseForm(req); err != nil {
 		return err
@@ -463,6 +499,18 @@ func serveRoutes() []routeSpec {
 				{Name: "filter", Type: "string", Repeated: true, Values: []string{"name=<regex>"}, Description: "Repeatable filter expression"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.listProjects },
+		},
+		{
+			method:  http.MethodGet,
+			path:    "/system",
+			summary: "Return Docker daemon host info from the socket this server uses",
+			handler: func(r *composeRouter) httputils.APIFunc { return r.systemInfo },
+		},
+		{
+			method:  http.MethodGet,
+			path:    "/system/df",
+			summary: "Return Docker daemon disk usage from the socket this server uses",
+			handler: func(r *composeRouter) httputils.APIFunc { return r.systemDiskUsage },
 		},
 		{
 			method:  http.MethodPost,
@@ -670,6 +718,18 @@ func serveRoutes() []routeSpec {
 				{Name: "format", Type: "string", Description: "Docker stats formatter template or `json`"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.statsProject },
+		},
+		{
+			method:  http.MethodGet,
+			path:    "/resources/{project}",
+			summary: "Return project resource usage, configured limits, and utilization as JSON",
+			queryParams: []queryParamSpec{
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
+				{Name: "service", Type: "string", Repeated: true, Description: "Optional service names"},
+				{Name: "all", Type: "boolean", Description: "Include stopped containers; stats may be unavailable for stopped containers"},
+				{Name: "granularity", Type: "string", Values: []string{"all", "container", "service", "project"}, Description: "Response grouping; defaults to all"},
+			},
+			handler: func(r *composeRouter) httputils.APIFunc { return r.resourcesProject },
 		},
 		{
 			method:  http.MethodGet,
