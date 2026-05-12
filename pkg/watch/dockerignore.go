@@ -69,19 +69,18 @@ func LoadDockerIgnore(build *types.BuildConfig) (PathMatcher, error) {
 	if build == nil {
 		return EmptyMatcher{}, nil
 	}
-	repoRoot := build.Context
-	absRoot, err := filepath.Abs(repoRoot)
+	absRoot, err := filepath.Abs(build.Context)
 	if err != nil {
 		return nil, err
 	}
 
 	// first try Dockerfile-specific ignore-file
-	f, err := os.Open(filepath.Join(repoRoot, build.Dockerfile+".dockerignore"))
+	f, err := os.Open(dockerfileIgnorePath(absRoot, build.Dockerfile))
 	if os.IsNotExist(err) {
 		// defaults to a global .dockerignore
-		f, err = os.Open(filepath.Join(repoRoot, ".dockerignore"))
+		f, err = os.Open(filepath.Join(absRoot, ".dockerignore"))
 		if os.IsNotExist(err) {
-			return NewDockerPatternMatcher(repoRoot, nil)
+			return NewDockerPatternMatcher(absRoot, nil)
 		}
 	}
 	if err != nil {
@@ -95,6 +94,16 @@ func LoadDockerIgnore(build *types.BuildConfig) (PathMatcher, error) {
 	}
 
 	return NewDockerPatternMatcher(absRoot, patterns)
+}
+
+func dockerfileIgnorePath(repoRoot, dockerfile string) string {
+	if dockerfile == "" {
+		dockerfile = "Dockerfile"
+	}
+	if filepath.IsAbs(dockerfile) {
+		return dockerfile + ".dockerignore"
+	}
+	return filepath.Join(repoRoot, dockerfile+".dockerignore")
 }
 
 // Make all the patterns use absolute paths.

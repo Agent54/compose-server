@@ -786,7 +786,7 @@ func (s *composeService) initialSyncFiles(ctx context.Context, project *types.Pr
 				// walk starts at the root directory
 				return nil
 			}
-			if shouldIgnore(filepath.Base(path), ignore) || checkIfPathAlreadyBindMounted(path, service.Volumes) {
+			if shouldIgnore(path, ignore) || checkIfPathAlreadyBindMounted(path, service.Volumes) {
 				// By definition sync ignores bind mounted paths
 				if d.IsDir() {
 					// skip folder
@@ -817,7 +817,7 @@ func (s *composeService) initialSyncFiles(ctx context.Context, project *types.Pr
 		})
 	case mode.IsRegular():
 		// process file
-		if fi.ModTime().After(timeImageCreated) && !shouldIgnore(filepath.Base(trigger.Path), ignore) && !checkIfPathAlreadyBindMounted(trigger.Path, service.Volumes) {
+		if fi.ModTime().After(timeImageCreated) && !shouldIgnore(trigger.Path, ignore) && !checkIfPathAlreadyBindMounted(trigger.Path, service.Volumes) {
 			pathsToCopy = append(pathsToCopy, &sync.PathMapping{
 				HostPath:      trigger.Path,
 				ContainerPath: trigger.Target,
