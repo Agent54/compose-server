@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	gsync "sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/cli"
@@ -147,6 +148,8 @@ type watchRule struct {
 	service string
 }
 
+var watchRebuildCounter atomic.Uint64
+
 func (r watchRule) Matches(event watch.FileEvent) *sync.PathMapping {
 	hostPath := string(event)
 	if !pathutil.IsChild(r.Path, hostPath) {
@@ -238,6 +241,10 @@ func (s *composeService) watch(ctx context.Context, project *types.Project, opti
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("none of the selected services is configured for watch, consider setting a 'develop' section")
 	}
+	for _, rule := range rules {
+		options.LogTo.Log(api.WatchLogger, fmt.Sprintf("compose-server-watch-debug rule service=%q action=%q path=%q target=%q include=%d ignore=%d", rule.service, rule.Action, rule.Path, rule.Target, len(rule.Include), len(rule.Ignore)))
+	}
+	options.LogTo.Log(api.WatchLogger, fmt.Sprintf("compose-server-watch-debug watching paths=%q", paths))
 
 	watcher, err := watch.NewWatcher(paths)
 	if err != nil {
@@ -565,11 +572,13 @@ func (s *composeService) handleWatchBatch(ctx context.Context, project *types.Pr
 		rebuild   = map[string]bool{}
 	)
 	for _, event := range batch {
+		options.LogTo.Log(api.WatchLogger, fmt.Sprintf("compose-server-watch-debug event=%q", event))
 		for i, rule := range rules {
 			mapping := rule.Matches(event)
 			if mapping == nil {
 				continue
 			}
+			options.LogTo.Log(api.WatchLogger, fmt.Sprintf("compose-server-watch-debug match service=%q action=%q event=%q rule=%q target=%q", rule.service, rule.Action, event, rule.Path, rule.Target))
 
 			switch rule.Action {
 			case types.WatchActionRebuild:
@@ -660,6 +669,8 @@ func (s *composeService) exec(ctx context.Context, project *types.Project, servi
 }
 
 func (s *composeService) rebuild(ctx context.Context, project *types.Project, services []string, options api.WatchOptions) error {
+	rebuildID := watchRebuildCounter.Add(1)
+	options.LogTo.Log(api.WatchLogger, fmt.Sprintf("compose-server-watch-debug rebuild=%d start services=%q", rebuildID, services))
 	options.LogTo.Log(api.WatchLogger, fmt.Sprintf("Rebuilding service(s) %q after changes were detected...", services))
 	// Work on a copy so concurrent watch events don't race on the shared
 	// BuildOptions pointer carried by WatchOptions.
@@ -685,6 +696,7 @@ func (s *composeService) rebuild(ctx context.Context, project *types.Project, se
 			return err
 		})(ctx)
 	if err != nil {
+		options.LogTo.Log(api.WatchLogger, fmt.Sprintf("compose-server-watch-debug rebuild=%d failed error=%v", rebuildID, err))
 		options.LogTo.Log(api.WatchLogger, fmt.Sprintf("Build failed. Error: %v", err))
 		return err
 	}
@@ -693,6 +705,7 @@ func (s *composeService) rebuild(ctx context.Context, project *types.Project, se
 		s.pruneDanglingImagesOnRebuild(ctx, project.Name, imageNameToIdMap)
 	}
 
+	options.LogTo.Log(api.WatchLogger, fmt.Sprintf("compose-server-watch-debug rebuild=%d built services=%q", rebuildID, services))
 	options.LogTo.Log(api.WatchLogger, fmt.Sprintf("service(s) %q successfully built", services))
 
 	err = s.create(ctx, project, api.CreateOptions{
