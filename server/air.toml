@@ -4,7 +4,7 @@ tmp_dir = "tmp/air-compose-server"
 [build]
 cmd = ": > last-build.txt && make 2>&1 | tee -a last-build.txt"
 bin = "bin/build/docker-compose"
-full_bin = "HOST_UID=$(id -u) HOST_GID=$(id -g) STACKS_PATH=/Users/jan/Dev/xe/stacks ./bin/build/docker-compose serve --allowed-origins=http://127.0.0.1:5177 --port=8094 /Users/jan/Dev/xe/stacks 2>&1 | tee -a last-build.txt"
+full_bin = "HOST_UID=$(id -u) HOST_GID=$(id -g) STACKS_PATH=/Users/jan/Dev/xe/stacks bin/build/docker-compose serve --allowed-origins=http://127.0.0.1:5177 --port=8094 /Users/jan/Dev/xe/stacks 2>&1 | tee -a last-build.txt"
 include_ext = ["go", "mod", "sum"]
 exclude_dir = ["bin", "tmp", "vendor", "node_modules", ".git", ".jj"]
 exclude_regex = ["_test.go"]
