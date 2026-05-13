@@ -47,11 +47,12 @@ type serverApp struct {
 }
 
 type upRequest struct {
-	Project  string   `json:"project,omitempty"`
-	Path     string   `json:"path,omitempty"`
-	Services []string `json:"services,omitempty"`
-	Build    bool     `json:"build,omitempty"`
-	Watch    bool     `json:"watch,omitempty"`
+	Project       string   `json:"project,omitempty"`
+	Path          string   `json:"path,omitempty"`
+	Services      []string `json:"services,omitempty"`
+	Build         bool     `json:"build,omitempty"`
+	Watch         bool     `json:"watch,omitempty"`
+	RemoveOrphans bool     `json:"removeOrphans,omitempty"`
 }
 
 type watchRequest struct {
@@ -70,6 +71,13 @@ type projectActionRequest struct {
 	Images          string   `json:"images,omitempty"`
 	Volumes         bool     `json:"volumes,omitempty"`
 	Signal          string   `json:"signal,omitempty"`
+}
+
+type rmRequest struct {
+	Path     string   `json:"path,omitempty"`
+	Services []string `json:"services,omitempty"`
+	Force    bool     `json:"force,omitempty"`
+	Stop     bool     `json:"stop,omitempty"`
 }
 
 type commitRequest struct {
@@ -164,7 +172,7 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 		for _, project := range projects {
 			prepareProjectForWatch(project)
 		}
-		if err := a.startWatch(projectName, projects, req.Services); err != nil {
+		if err := a.startWatch(projectName, projects, req.Services, req.RemoveOrphans); err != nil {
 			return actionResponse{}, err
 		}
 		return actionResponse{
@@ -220,6 +228,7 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 			Create: composeapi.CreateOptions{
 				Build:                buildPtr,
 				Services:             services,
+				RemoveOrphans:        req.RemoveOrphans,
 				Recreate:             composeapi.RecreateDiverged,
 				RecreateDependencies: composeapi.RecreateDiverged,
 				Inherit:              true,
@@ -300,7 +309,7 @@ func (a *serverApp) restartWatch(ctx context.Context, projectName string, req wa
 	for _, project := range projects {
 		prepareProjectForWatch(project)
 	}
-	if err := a.startWatch(projectName, projects, req.Services); err != nil {
+	if err := a.startWatch(projectName, projects, req.Services, false); err != nil {
 		return actionResponse{}, err
 	}
 	return actionResponse{
@@ -415,6 +424,29 @@ func (a *serverApp) downProject(ctx context.Context, projectName string, req pro
 			Images:        req.Images,
 			Volumes:       req.Volumes,
 			Services:      services,
+		}); err != nil {
+			return actionResponse{}, err
+		}
+	}
+	return a.actionResult(projects[0], name, false, ""), nil
+}
+
+func (a *serverApp) rmProject(ctx context.Context, projectName string, req rmRequest) (actionResponse, error) {
+	projects, backend, name, err := a.resolveActionProjects(ctx, projectName, req.Path)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	projects, err = filterProjectVariantsByServices(projects, req.Services)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	for _, project := range projects {
+		services, _ := servicesForProject(project, req.Services)
+		if err := backend.Remove(ctx, name, composeapi.RemoveOptions{
+			Project:  project,
+			Services: services,
+			Force:    req.Force,
+			Stop:     req.Stop,
 		}); err != nil {
 			return actionResponse{}, err
 		}
@@ -685,7 +717,7 @@ func (a *serverApp) streamWatch(ctx context.Context, projectName string, w http.
 	return a.watches.stream(ctx, projectName, w)
 }
 
-func (a *serverApp) startWatch(projectName string, projects []*types.Project, requestedServices []string) error {
+func (a *serverApp) startWatch(projectName string, projects []*types.Project, requestedServices []string, removeOrphans bool) error {
 	return a.watches.start(projectName, func(ctx context.Context, consumer composeapi.LogConsumer) error {
 		eg, ctx := errgroup.WithContext(ctx)
 		for _, project := range projects {
@@ -702,7 +734,7 @@ func (a *serverApp) startWatch(projectName string, projects []*types.Project, re
 				if err != nil {
 					return err
 				}
-				return backend.Up(ctx, project, watchModeUpOptions(project, a.newBuildOptionsForServices(project, services), consumer, services))
+				return backend.Up(ctx, project, watchModeUpOptions(project, a.newBuildOptionsForServices(project, services), consumer, services, removeOrphans))
 			})
 		}
 		return eg.Wait()
@@ -1194,13 +1226,14 @@ func runtimeProjectLoadOptions() []composecli.ProjectOptionsFn {
 	return []composecli.ProjectOptionsFn{composecli.WithoutEnvironmentResolution}
 }
 
-func watchModeUpOptions(project *types.Project, build composeapi.BuildOptions, consumer composeapi.LogConsumer, services []string) composeapi.UpOptions {
+func watchModeUpOptions(project *types.Project, build composeapi.BuildOptions, consumer composeapi.LogConsumer, services []string, removeOrphans bool) composeapi.UpOptions {
 	buildCopy := build
 	selectedServices := serviceSelection(project, services)
 	return composeapi.UpOptions{
 		Create: composeapi.CreateOptions{
 			Build:                &buildCopy,
 			Services:             selectedServices,
+			RemoveOrphans:        removeOrphans,
 			Recreate:             composeapi.RecreateDiverged,
 			RecreateDependencies: composeapi.RecreateDiverged,
 			Inherit:              true,
