@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -106,6 +107,8 @@ func statusCodeForError(err error) int {
 	case errdefs.IsInvalidParameter(err):
 		return http.StatusBadRequest
 	case errdefs.IsNotFound(err):
+		return http.StatusNotFound
+	case errors.Is(err, composeapi.ErrNoResources):
 		return http.StatusNotFound
 	case errdefs.IsConflict(err):
 		return http.StatusConflict
@@ -251,6 +254,18 @@ func (r *composeRouter) downProject(ctx context.Context, w http.ResponseWriter, 
 		return err
 	}
 	resp, err := r.app.downProject(ctx, vars["project"], body)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, resp)
+}
+
+func (r *composeRouter) rmProject(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
+	var body rmRequest
+	if err := decodeJSONBody(req, &body); err != nil {
+		return err
+	}
+	resp, err := r.app.rmProject(ctx, vars["project"], body)
 	if err != nil {
 		return err
 	}
@@ -550,6 +565,7 @@ func serveRoutes() []routeSpec {
 				{Name: "services", Type: "string[]", Description: "Optional service names"},
 				{Name: "build", Type: "boolean", Description: "Build before starting"},
 				{Name: "watch", Type: "boolean", Description: "Start watch mode after up succeeds"},
+				{Name: "removeOrphans", Type: "boolean", Description: "Remove orphan containers"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.upProject },
 		},
@@ -623,6 +639,18 @@ func serveRoutes() []routeSpec {
 				{Name: "images", Type: "string", Description: `Image removal mode: "local" or "all"`},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.downProject },
+		},
+		{
+			method:  http.MethodPost,
+			path:    "/rm/{project}",
+			summary: "Remove stopped service containers for a project",
+			bodyFields: []bodyFieldSpec{
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
+				{Name: "services", Type: "string[]", Description: "Optional service names"},
+				{Name: "force", Type: "boolean", Description: "Do not ask for confirmation before removal"},
+				{Name: "stop", Type: "boolean", Description: "Stop running containers before removal"},
+			},
+			handler: func(r *composeRouter) httputils.APIFunc { return r.rmProject },
 		},
 		{
 			method:  http.MethodPost,
