@@ -6,3 +6,5 @@ covdatafiles/
 pkg/e2e/*.tar
 
 .gocache
+last-build.txt
+server/air.dtach
