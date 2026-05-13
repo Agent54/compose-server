@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec air -c server/air.toml
+exec dtach -n server/air.dtach air -c server/air.toml
