@@ -842,6 +842,7 @@ func serveRoutes() []routeSpec {
 			bodyFields: []bodyFieldSpec{
 				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 				{Name: "services", Type: "string[]", Description: "Optional service names"},
+				{Name: "build", Type: "boolean", Description: "Build before restarting watch; defaults to true"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.postWatch },
 		},

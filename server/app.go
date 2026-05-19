@@ -58,6 +58,7 @@ type upRequest struct {
 type watchRequest struct {
 	Path     string   `json:"path,omitempty"`
 	Services []string `json:"services,omitempty"`
+	Build    *bool    `json:"build,omitempty"`
 }
 
 type projectActionRequest struct {
@@ -172,7 +173,7 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 		for _, project := range projects {
 			prepareProjectForWatch(project)
 		}
-		if err := a.startWatch(projectName, projects, req.Services, req.RemoveOrphans); err != nil {
+		if err := a.startWatch(projectName, projects, req.Services, req.Build, req.RemoveOrphans); err != nil {
 			return actionResponse{}, err
 		}
 		return actionResponse{
@@ -309,7 +310,7 @@ func (a *serverApp) restartWatch(ctx context.Context, projectName string, req wa
 	for _, project := range projects {
 		prepareProjectForWatch(project)
 	}
-	if err := a.startWatch(projectName, projects, req.Services, false); err != nil {
+	if err := a.startWatch(projectName, projects, req.Services, watchRequestBuild(req), false); err != nil {
 		return actionResponse{}, err
 	}
 	return actionResponse{
@@ -717,7 +718,7 @@ func (a *serverApp) streamWatch(ctx context.Context, projectName string, w http.
 	return a.watches.stream(ctx, projectName, w)
 }
 
-func (a *serverApp) startWatch(projectName string, projects []*types.Project, requestedServices []string, removeOrphans bool) error {
+func (a *serverApp) startWatch(projectName string, projects []*types.Project, requestedServices []string, build bool, removeOrphans bool) error {
 	return a.watches.start(projectName, func(ctx context.Context, consumer composeapi.LogConsumer) error {
 		eg, ctx := errgroup.WithContext(ctx)
 		for _, project := range projects {
@@ -734,7 +735,8 @@ func (a *serverApp) startWatch(projectName string, projects []*types.Project, re
 				if err != nil {
 					return err
 				}
-				return backend.Up(ctx, project, watchModeUpOptions(project, a.newBuildOptionsForServices(project, services), consumer, services, removeOrphans))
+				consumer.Status(composeapi.WatchLogger, "compose-server-watch-debug command="+analogUpCommand(project, services, build, true, removeOrphans))
+				return backend.Up(ctx, project, watchModeUpOptions(project, a.newBuildOptionsForServices(project, services), consumer, services, build, removeOrphans))
 			})
 		}
 		return eg.Wait()
@@ -1209,6 +1211,27 @@ func serviceSelection(project *types.Project, services []string) []string {
 	return services
 }
 
+func analogUpCommand(project *types.Project, services []string, build bool, watch bool, removeOrphans bool) string {
+	args := []string{"docker", "compose"}
+	if project != nil {
+		for _, file := range project.ComposeFiles {
+			args = append(args, "-f", file)
+		}
+	}
+	args = append(args, "up")
+	if watch {
+		args = append(args, "--watch")
+	}
+	if build {
+		args = append(args, "--build")
+	}
+	if removeOrphans {
+		args = append(args, "--remove-orphans")
+	}
+	args = append(args, services...)
+	return strings.Join(args, " ")
+}
+
 func prepareProjectForWatch(project *types.Project) {
 	for index, service := range project.Services {
 		if service.Build != nil && service.Develop != nil {
@@ -1226,12 +1249,23 @@ func runtimeProjectLoadOptions() []composecli.ProjectOptionsFn {
 	return []composecli.ProjectOptionsFn{composecli.WithoutEnvironmentResolution}
 }
 
-func watchModeUpOptions(project *types.Project, build composeapi.BuildOptions, consumer composeapi.LogConsumer, services []string, removeOrphans bool) composeapi.UpOptions {
-	buildCopy := build
+func watchRequestBuild(req watchRequest) bool {
+	if req.Build == nil {
+		return true
+	}
+	return *req.Build
+}
+
+func watchModeUpOptions(project *types.Project, build composeapi.BuildOptions, consumer composeapi.LogConsumer, services []string, buildEnabled bool, removeOrphans bool) composeapi.UpOptions {
 	selectedServices := serviceSelection(project, services)
+	var buildPtr *composeapi.BuildOptions
+	if buildEnabled {
+		buildCopy := build
+		buildPtr = &buildCopy
+	}
 	return composeapi.UpOptions{
 		Create: composeapi.CreateOptions{
-			Build:                &buildCopy,
+			Build:                buildPtr,
 			Services:             selectedServices,
 			RemoveOrphans:        removeOrphans,
 			Recreate:             composeapi.RecreateDiverged,
