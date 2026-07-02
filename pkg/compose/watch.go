@@ -243,7 +243,10 @@ func (s *composeService) watch(ctx context.Context, project *types.Project, opti
 		return nil, fmt.Errorf("none of the selected services is configured for watch, consider setting a 'develop' section")
 	}
 	for _, rule := range rules {
-		options.LogTo.Log(api.WatchLogger, fmt.Sprintf("compose-server-watch-debug rule service=%q action=%q path=%q target=%q include=%d ignore=%d", rule.service, rule.Action, rule.Path, rule.Target, len(rule.Include), len(rule.Ignore)))
+		options.LogTo.Log(api.WatchLogger, fmt.Sprintf(
+			"compose-server-watch-debug rule service=%q action=%q path=%q target=%q include=%d ignore=%d",
+			rule.service, rule.Action, rule.Path, rule.Target, len(rule.Include), len(rule.Ignore),
+		))
 	}
 	options.LogTo.Log(api.WatchLogger, fmt.Sprintf("compose-server-watch-debug watching paths=%q", paths))
 
@@ -339,7 +342,7 @@ func getWatchRules(config *types.DevelopConfig, service types.ServiceConfig) ([]
 	// add a hardcoded set of ignores on top of what came from .dockerignore
 	// some of this should likely be configurable (e.g. there could be cases
 	// where you want `.git` to be synced) but this is suitable for now
-	dotGitIgnore, err := watch.NewDockerPatternMatcher("/", []string{".git/"})
+	dotGitIgnore, err := watch.NewDockerPatternMatcher("/", []string{"**/.git/"})
 	if err != nil {
 		return nil, err
 	}
@@ -782,7 +785,7 @@ func (s *composeService) initialSync(ctx context.Context, service types.ServiceC
 		return err
 	}
 
-	dotGitIgnore, err := watch.NewDockerPatternMatcher("/", []string{".git/"})
+	dotGitIgnore, err := watch.NewDockerPatternMatcher("/", []string{"**/.git/"})
 	if err != nil {
 		return err
 	}
@@ -797,6 +800,9 @@ func (s *composeService) initialSync(ctx context.Context, service types.ServiceC
 	dockerFilePatterns = append(dockerFilePatterns, cli.DefaultOverrideFileNames...)
 	if service.Build != nil && service.Build.Dockerfile != "" {
 		dockerFilePatterns = append(dockerFilePatterns, filepath.Base(service.Build.Dockerfile))
+	}
+	for i, pattern := range dockerFilePatterns {
+		dockerFilePatterns[i] = "**/" + pattern
 	}
 
 	dockerFileIgnore, err := watch.NewDockerPatternMatcher("/", dockerFilePatterns)

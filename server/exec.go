@@ -1,3 +1,19 @@
+/*
+   Copyright 2020 Docker Compose CLI authors
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
+
 package serve
 
 import (
@@ -10,12 +26,12 @@ import (
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
-	"github.com/docker/docker/errdefs"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	containertypes "github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
 
 	composeapi "github.com/docker/compose/v5/pkg/api"
+	"github.com/docker/compose/v5/server/errdefs"
 )
 
 type containerExecRequest struct {
@@ -249,7 +265,14 @@ func (a *serverApp) dockerRuntime() (statsRuntime, error) {
 	return runtime, nil
 }
 
-func (a *serverApp) resolveTargetContainer(ctx context.Context, apiClient mobyclient.APIClient, projectName string, project *types.Project, requestPath, containerRef, service string, index int) (containertypes.Summary, error) {
+func (a *serverApp) resolveTargetContainer(
+	ctx context.Context,
+	apiClient mobyclient.APIClient,
+	projectName string,
+	project *types.Project,
+	requestPath, containerRef, service string,
+	index int,
+) (containertypes.Summary, error) {
 	containers, err := listProjectContainers(ctx, apiClient, projectName, true, nil)
 	if err != nil {
 		return containertypes.Summary{}, err

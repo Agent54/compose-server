@@ -513,6 +513,11 @@ func RootCommand(dockerCli command.Cli, backendOptions *BackendOptions) *cobra.C
 		},
 	}
 
+	var serverBackendOptions []compose.Option
+	if backendOptions != nil {
+		serverBackendOptions = backendOptions.Options
+	}
+
 	c.AddCommand(
 		upCommand(&opts, dockerCli, backendOptions),
 		downCommand(&opts, dockerCli, backendOptions),
@@ -549,7 +554,7 @@ func RootCommand(dockerCli command.Cli, backendOptions *BackendOptions) *cobra.C
 		publishCommand(&opts, dockerCli, backendOptions),
 		alphaCommand(&opts, dockerCli, backendOptions),
 		bridgeCommand(&opts, dockerCli),
-		servercmd.NewCommand(dockerCli, backendOptions.Options),
+		servercmd.NewCommand(dockerCli, serverBackendOptions),
 		volumesCommand(&opts, dockerCli, backendOptions),
 	)
 

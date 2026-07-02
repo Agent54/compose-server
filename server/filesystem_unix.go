@@ -1,3 +1,5 @@
+//go:build !windows
+
 /*
    Copyright 2020 Docker Compose CLI authors
 
@@ -16,16 +18,15 @@
 
 package serve
 
-import (
-	"context"
+import "syscall"
 
-	composeapi "github.com/docker/compose/v5/pkg/api"
-)
-
-type noopEventProcessor struct{}
-
-func (noopEventProcessor) Start(context.Context, string) {}
-
-func (noopEventProcessor) On(...composeapi.Resource) {}
-
-func (noopEventProcessor) Done(string, bool) {}
+func filesystemTotalBytes(path string) uint64 {
+	if path == "" {
+		return 0
+	}
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0
+	}
+	return stat.Blocks * uint64(stat.Bsize)
+}

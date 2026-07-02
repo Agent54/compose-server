@@ -1,3 +1,5 @@
+//go:build windows
+
 /*
    Copyright 2020 Docker Compose CLI authors
 
@@ -16,16 +18,19 @@
 
 package serve
 
-import (
-	"context"
+import "golang.org/x/sys/windows"
 
-	composeapi "github.com/docker/compose/v5/pkg/api"
-)
-
-type noopEventProcessor struct{}
-
-func (noopEventProcessor) Start(context.Context, string) {}
-
-func (noopEventProcessor) On(...composeapi.Resource) {}
-
-func (noopEventProcessor) Done(string, bool) {}
+func filesystemTotalBytes(path string) uint64 {
+	if path == "" {
+		return 0
+	}
+	pathPtr, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0
+	}
+	var totalBytes uint64
+	if err := windows.GetDiskFreeSpaceEx(pathPtr, nil, &totalBytes, nil); err != nil {
+		return 0
+	}
+	return totalBytes
+}

@@ -1,3 +1,19 @@
+/*
+   Copyright 2020 Docker Compose CLI authors
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
+
 package serve
 
 import (
@@ -27,7 +43,7 @@ func TestListProjectsRouteSupportsVersionedPath(t *testing.T) {
 		assert.Equal(t, options.All, true)
 		return []composeapi.Stack{{Name: "demo"}}, nil
 	}
-	mux := server.CreateMux(context.Background(), newRouter(app))
+	mux := server.CreateMux(t.Context(), newRouter(app))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1.51/ls?all=true", http.NoBody)
 	resp := httptest.NewRecorder()
@@ -53,7 +69,7 @@ func TestListProjectsRouteRejectsUnsupportedVersion(t *testing.T) {
 		t.Fatal("list should not be called for unsupported versions")
 		return nil, nil
 	}
-	mux := server.CreateMux(context.Background(), newRouter(app))
+	mux := server.CreateMux(t.Context(), newRouter(app))
 
 	req := httptest.NewRequest(http.MethodGet, "/v999.0/ls", http.NoBody)
 	resp := httptest.NewRecorder()
@@ -73,7 +89,7 @@ func TestListProjectsRouteAppliesNameFilter(t *testing.T) {
 	app.listOverride = func(ctx context.Context, options composeapi.ListOptions) ([]composeapi.Stack, error) {
 		return []composeapi.Stack{{Name: "demo"}, {Name: "other"}}, nil
 	}
-	mux := server.CreateMux(context.Background(), newRouter(app))
+	mux := server.CreateMux(t.Context(), newRouter(app))
 
 	req := httptest.NewRequest(http.MethodGet, "/ls?filter=name=demo", http.NoBody)
 	resp := httptest.NewRecorder()
@@ -99,7 +115,7 @@ func TestRootReturnsSchemaFromRouteDefinitions(t *testing.T) {
 		excludedDir:    []string{".git", "node_modules"},
 		allowedOrigins: []string{"http://localhost:3000"},
 	}
-	mux := server.CreateMux(context.Background(), newRouter(newServerApp(cfg, nil, nil)))
+	mux := server.CreateMux(t.Context(), newRouter(newServerApp(cfg, nil, nil)))
 
 	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	resp := httptest.NewRecorder()

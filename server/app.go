@@ -1,3 +1,19 @@
+/*
+   Copyright 2020 Docker Compose CLI authors
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
+
 package serve
 
 import (
@@ -7,8 +23,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,17 +34,19 @@ import (
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/cli/opts"
 	"github.com/docker/docker/api/server/httputils"
-	"github.com/docker/docker/errdefs"
 	containertypes "github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
 	"golang.org/x/sync/errgroup"
 
 	composeapi "github.com/docker/compose/v5/pkg/api"
 	composepkg "github.com/docker/compose/v5/pkg/compose"
+	"github.com/docker/compose/v5/server/errdefs"
 )
 
-type backendFactory func(...composepkg.Option) (composeapi.Compose, error)
-type statsRuntimeFactory func() (statsRuntime, error)
+type (
+	backendFactory      func(...composepkg.Option) (composeapi.Compose, error)
+	statsRuntimeFactory func() (statsRuntime, error)
+)
 
 type statsRuntime struct {
 	client mobyclient.APIClient
@@ -347,7 +365,7 @@ func (a *serverApp) startProject(ctx context.Context, projectName string, req pr
 			return actionResponse{}, err
 		}
 	}
-	return a.actionResult(projects[0], name, false, ""), nil
+	return a.actionResult(projects[0], name, ""), nil
 }
 
 func (a *serverApp) stopProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {
@@ -373,7 +391,7 @@ func (a *serverApp) stopProject(ctx context.Context, projectName string, req pro
 			return actionResponse{}, err
 		}
 	}
-	return a.actionResult(projects[0], name, false, ""), nil
+	return a.actionResult(projects[0], name, ""), nil
 }
 
 func (a *serverApp) restartProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {
@@ -400,7 +418,7 @@ func (a *serverApp) restartProject(ctx context.Context, projectName string, req 
 			return actionResponse{}, err
 		}
 	}
-	return a.actionResult(projects[0], name, false, ""), nil
+	return a.actionResult(projects[0], name, ""), nil
 }
 
 func (a *serverApp) downProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {
@@ -429,7 +447,7 @@ func (a *serverApp) downProject(ctx context.Context, projectName string, req pro
 			return actionResponse{}, err
 		}
 	}
-	return a.actionResult(projects[0], name, false, ""), nil
+	return a.actionResult(projects[0], name, ""), nil
 }
 
 func (a *serverApp) rmProject(ctx context.Context, projectName string, req rmRequest) (actionResponse, error) {
@@ -452,7 +470,7 @@ func (a *serverApp) rmProject(ctx context.Context, projectName string, req rmReq
 			return actionResponse{}, err
 		}
 	}
-	return a.actionResult(projects[0], name, false, ""), nil
+	return a.actionResult(projects[0], name, ""), nil
 }
 
 func (a *serverApp) pauseProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {
@@ -466,7 +484,7 @@ func (a *serverApp) pauseProject(ctx context.Context, projectName string, req pr
 	}); err != nil {
 		return actionResponse{}, err
 	}
-	return a.actionResult(project, name, false, "pause freezes container processes in place; stop asks them to exit and leaves the containers stopped"), nil
+	return a.actionResult(project, name, "pause freezes container processes in place; stop asks them to exit and leaves the containers stopped"), nil
 }
 
 func (a *serverApp) unpauseProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {
@@ -480,7 +498,7 @@ func (a *serverApp) unpauseProject(ctx context.Context, projectName string, req 
 	}); err != nil {
 		return actionResponse{}, err
 	}
-	return a.actionResult(project, name, false, ""), nil
+	return a.actionResult(project, name, ""), nil
 }
 
 func (a *serverApp) killProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {
@@ -496,7 +514,7 @@ func (a *serverApp) killProject(ctx context.Context, projectName string, req pro
 	}); err != nil {
 		return actionResponse{}, err
 	}
-	return a.actionResult(project, name, false, ""), nil
+	return a.actionResult(project, name, ""), nil
 }
 
 func (a *serverApp) commitProject(ctx context.Context, projectName string, req commitRequest) (actionResponse, error) {
@@ -722,7 +740,6 @@ func (a *serverApp) startWatch(projectName string, projects []*types.Project, re
 	return a.watches.start(projectName, func(ctx context.Context, consumer composeapi.LogConsumer) error {
 		eg, ctx := errgroup.WithContext(ctx)
 		for _, project := range projects {
-			project := project
 			eg.Go(func() error {
 				services, ok := servicesForProject(project, requestedServices)
 				if !ok {
@@ -774,18 +791,6 @@ func (a *serverApp) loadProjectWithBackend(ctx context.Context, backend composea
 		return nil, err
 	}
 	return project, nil
-}
-
-func (a *serverApp) loadProjectVariants(ctx context.Context, requestPath string) ([]*types.Project, composeapi.Compose, error) {
-	backend, err := a.backend()
-	if err != nil {
-		return nil, nil, err
-	}
-	projects, err := a.loadProjectVariantsWithBackend(ctx, backend, requestPath)
-	if err != nil {
-		return nil, nil, err
-	}
-	return projects, backend, nil
 }
 
 func (a *serverApp) loadProjectVariantsWithBackend(ctx context.Context, backend composeapi.Compose, requestPath string) ([]*types.Project, error) {
@@ -936,28 +941,6 @@ func (a *serverApp) resolveWatchProjects(ctx context.Context, projectName, reque
 		return nil, "", err
 	}
 	return projects, strings.Join(uniqueProjectConfigFiles(projects), ","), nil
-}
-
-func (a *serverApp) findFirstProjectByName(ctx context.Context, backend composeapi.Compose, projectName string) (*types.Project, error) {
-	dirs, err := findComposeDirectories(newDiscoveryOptions(a.config))
-	if err != nil {
-		return nil, err
-	}
-	for _, dir := range dirs {
-		project, err := backend.LoadProject(ctx, composeapi.ProjectLoadOptions{
-			WorkingDir:        dir,
-			Offline:           true,
-			ProjectOptionsFns: runtimeProjectLoadOptions(),
-		})
-		if err == nil && project.Name == projectName {
-			project, err = runtimeProject(project)
-			if err != nil {
-				return nil, err
-			}
-			return project, nil
-		}
-	}
-	return nil, errdefs.NotFound(fmt.Errorf("project %q not found", projectName))
 }
 
 func (a *serverApp) findProjectVariantsByName(ctx context.Context, backend composeapi.Compose, projectName string) ([]*types.Project, error) {
@@ -1190,10 +1173,6 @@ func (a *serverApp) resolvePathValue(root, requestPath string) (string, error) {
 		return "", errdefs.InvalidParameter(fmt.Errorf("path escapes serve root: %s", requestPath))
 	}
 	return candidate, nil
-}
-
-func (a *serverApp) newBuildOptions(project *types.Project) composeapi.BuildOptions {
-	return a.newBuildOptionsForServices(project, project.ServiceNames())
 }
 
 func (a *serverApp) newBuildOptionsForServices(project *types.Project, services []string) composeapi.BuildOptions {
@@ -1433,12 +1412,12 @@ func parsedProjectPublishers(service types.ServiceConfig) composeapi.PortPublish
 	return publishers
 }
 
-func (a *serverApp) actionResult(project *types.Project, name string, watching bool, message string) actionResponse {
+func (a *serverApp) actionResult(project *types.Project, name string, message string) actionResponse {
 	resp := actionResponse{
 		OK:       true,
 		Project:  name,
-		Watching: watching,
-		WatchURL: watchURL(name, watching),
+		Watching: false,
+		WatchURL: "",
 		Message:  message,
 	}
 	if project != nil {
@@ -1482,7 +1461,7 @@ func renderComposeEvent(event composeapi.Event, asJSON bool) string {
 			return string(payload)
 		}
 	}
-	return fmt.Sprint(event)
+	return event.String()
 }
 
 func watchURL(project string, enabled bool) string {

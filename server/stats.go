@@ -1,3 +1,19 @@
+/*
+   Copyright 2020 Docker Compose CLI authors
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
+
 package serve
 
 import (
@@ -13,17 +29,16 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	containercmd "github.com/docker/cli/cli/command/container"
 	dockerformatter "github.com/docker/cli/cli/command/formatter"
-	"github.com/docker/docker/errdefs"
 	"github.com/docker/go-units"
 	containertypes "github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
 
 	composeapi "github.com/docker/compose/v5/pkg/api"
+	"github.com/docker/compose/v5/server/errdefs"
 )
 
 type statsRequest struct {
@@ -48,17 +63,17 @@ type systemInfoResponse struct {
 	OSType            string  `json:"osType,omitempty"`
 	OperatingSystem   string  `json:"operatingSystem,omitempty"`
 	Architecture      string  `json:"architecture,omitempty"`
-	ServerVersion      string  `json:"serverVersion,omitempty"`
-	DockerRootDir      string  `json:"dockerRootDir,omitempty"`
+	ServerVersion     string  `json:"serverVersion,omitempty"`
+	DockerRootDir     string  `json:"dockerRootDir,omitempty"`
 	StorageDriver     string  `json:"storageDriver,omitempty"`
 	ContainersRunning int     `json:"containersRunning"`
 	Raw               any     `json:"raw"`
 }
 
 type systemDiskUsageResponse struct {
-	OK         bool  `json:"ok"`
-	UsedBytes int64 `json:"usedBytes"`
-	TotalBytes uint64 `json:"totalBytes,omitempty"`
+	OK         bool             `json:"ok"`
+	UsedBytes  int64            `json:"usedBytes"`
+	TotalBytes uint64           `json:"totalBytes,omitempty"`
 	Images     diskUsageSummary `json:"images"`
 	Containers diskUsageSummary `json:"containers"`
 	Volumes    diskUsageSummary `json:"volumes"`
@@ -119,23 +134,23 @@ type resourceUsage struct {
 	MemoryPercent    float64 `json:"memoryPercent"`
 	NetworkRxBytes   float64 `json:"networkRxBytes"`
 	NetworkTxBytes   float64 `json:"networkTxBytes"`
-	BlockReadBytes    float64 `json:"blockReadBytes"`
-	BlockWriteBytes   float64 `json:"blockWriteBytes"`
-	PidsCurrent       uint64  `json:"pidsCurrent,omitempty"`
+	BlockReadBytes   float64 `json:"blockReadBytes"`
+	BlockWriteBytes  float64 `json:"blockWriteBytes"`
+	PidsCurrent      uint64  `json:"pidsCurrent,omitempty"`
 }
 
 type resourceLimits struct {
-	MemoryBytes            int64  `json:"memoryBytes,omitempty"`
-	MemoryReservationBytes int64  `json:"memoryReservationBytes,omitempty"`
-	MemorySwapBytes        int64  `json:"memorySwapBytes,omitempty"`
-	NanoCPUs               int64  `json:"nanoCpus,omitempty"`
+	MemoryBytes            int64   `json:"memoryBytes,omitempty"`
+	MemoryReservationBytes int64   `json:"memoryReservationBytes,omitempty"`
+	MemorySwapBytes        int64   `json:"memorySwapBytes,omitempty"`
+	NanoCPUs               int64   `json:"nanoCpus,omitempty"`
 	CPUCores               float64 `json:"cpuCores,omitempty"`
-	CPUPeriod              int64  `json:"cpuPeriod,omitempty"`
-	CPUQuota               int64  `json:"cpuQuota,omitempty"`
-	CPUShares              int64  `json:"cpuShares,omitempty"`
-	CPUCount               int64  `json:"cpuCount,omitempty"`
-	CpusetCpus             string `json:"cpusetCpus,omitempty"`
-	PidsLimit              *int64 `json:"pidsLimit,omitempty"`
+	CPUPeriod              int64   `json:"cpuPeriod,omitempty"`
+	CPUQuota               int64   `json:"cpuQuota,omitempty"`
+	CPUShares              int64   `json:"cpuShares,omitempty"`
+	CPUCount               int64   `json:"cpuCount,omitempty"`
+	CpusetCpus             string  `json:"cpusetCpus,omitempty"`
+	PidsLimit              *int64  `json:"pidsLimit,omitempty"`
 }
 
 type resourceUtilization struct {
@@ -186,8 +201,8 @@ func (a *serverApp) systemInfo(ctx context.Context) (systemInfoResponse, error) 
 		OSType:            info.Info.OSType,
 		OperatingSystem:   info.Info.OperatingSystem,
 		Architecture:      info.Info.Architecture,
-		ServerVersion:      info.Info.ServerVersion,
-		DockerRootDir:      info.Info.DockerRootDir,
+		ServerVersion:     info.Info.ServerVersion,
+		DockerRootDir:     info.Info.DockerRootDir,
 		StorageDriver:     info.Info.Driver,
 		ContainersRunning: len(containers.Items),
 		Raw:               info,
@@ -213,7 +228,7 @@ func (a *serverApp) systemDiskUsage(ctx context.Context) (systemDiskUsageRespons
 	usedBytes := usage.Images.TotalSize + usage.Containers.TotalSize + usage.Volumes.TotalSize + usage.BuildCache.TotalSize
 	return systemDiskUsageResponse{
 		OK:         true,
-		UsedBytes: usedBytes,
+		UsedBytes:  usedBytes,
 		TotalBytes: filesystemTotalBytes(info.Info.DockerRootDir),
 		Images: diskUsageSummary{
 			ActiveCount: usage.Images.ActiveCount,
@@ -327,7 +342,7 @@ func (a *serverApp) streamStats(ctx context.Context, projectName string, req sta
 	}
 }
 
-func (a *serverApp) projectResources(ctx context.Context, projectName string, req resourcesRequest) (projectResourcesResponse, error) {
+func (a *serverApp) projectResources(ctx context.Context, projectName string, req resourcesRequest) (projectResourcesResponse, error) { //nolint:gocognit
 	project, _, name, err := a.resolvePSProject(ctx, projectName, req.Path)
 	if err != nil {
 		return projectResourcesResponse{}, err
@@ -520,9 +535,9 @@ func usageFromStats(entry containercmd.StatsEntry) resourceUsage {
 		MemoryPercent:    entry.MemoryPercentage,
 		NetworkRxBytes:   entry.NetworkRx,
 		NetworkTxBytes:   entry.NetworkTx,
-		BlockReadBytes:    entry.BlockRead,
-		BlockWriteBytes:   entry.BlockWrite,
-		PidsCurrent:       entry.PidsCurrent,
+		BlockReadBytes:   entry.BlockRead,
+		BlockWriteBytes:  entry.BlockWrite,
+		PidsCurrent:      entry.PidsCurrent,
 	}
 }
 
@@ -645,17 +660,6 @@ func addContainerToAggregate(aggregate *resourceAggregate, ctr containerResource
 	}
 }
 
-func filesystemTotalBytes(path string) uint64 {
-	if path == "" {
-		return 0
-	}
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0
-	}
-	return stat.Blocks * uint64(stat.Bsize)
-}
-
 func statsEntryName(entry containercmd.StatsEntry) string {
 	if name := strings.TrimPrefix(entry.Name, "/"); name != "" {
 		return name
@@ -666,7 +670,7 @@ func statsEntryName(entry containercmd.StatsEntry) string {
 	return entry.ID
 }
 
-func collectStats(ctx context.Context, stat *containercmd.Stats, apiClient mobyclient.APIClient, streamStats bool, waitFirst *sync.WaitGroup, daemonOSType string) { //nolint:gocyclo
+func collectStats(ctx context.Context, stat *containercmd.Stats, apiClient mobyclient.APIClient, streamStats bool, waitFirst *sync.WaitGroup, daemonOSType string) { //nolint:gocognit
 	var gotFirst bool
 	defer func() {
 		if !gotFirst {
@@ -685,7 +689,7 @@ func collectStats(ctx context.Context, stat *containercmd.Stats, apiClient mobyc
 
 	results := make(chan error, 1)
 	go func() {
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 		decoder := json.NewDecoder(response.Body)
 		for {
 			if ctx.Err() != nil {
