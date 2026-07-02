@@ -11,6 +11,7 @@ on:
   push:
     branches:
       - 'main'
+      - 'int'
     tags:
       - 'v*'
   pull_request:
