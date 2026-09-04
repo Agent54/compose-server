@@ -30,6 +30,7 @@ cname:
     - docker compose rm
     - docker compose run
     - docker compose scale
+    - docker compose serve
     - docker compose start
     - docker compose stats
     - docker compose stop
@@ -66,6 +67,7 @@ clink:
     - docker_compose_rm.yaml
     - docker_compose_run.yaml
     - docker_compose_scale.yaml
+    - docker_compose_serve.yaml
     - docker_compose_start.yaml
     - docker_compose_stats.yaml
     - docker_compose_stop.yaml

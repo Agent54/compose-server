@@ -37,6 +37,7 @@ Define and run multi-container applications with Docker
 | [`rm`](compose_rm.md)           | Removes stopped service containers                                                      |
 | [`run`](compose_run.md)         | Run a one-off command on a service                                                      |
 | [`scale`](compose_scale.md)     | Scale services                                                                          |
+| [`serve`](compose_serve.md)     | Serve a Compose HTTP API over a unix socket or TCP port                                 |
 | [`start`](compose_start.md)     | Start services                                                                          |
 | [`stats`](compose_stats.md)     | Display a live stream of container(s) resource usage statistics                         |
 | [`stop`](compose_stop.md)       | Stop services                                                                           |

@@ -1,0 +1,66 @@
+command: docker compose serve
+short: Serve a Compose HTTP API over a unix socket or TCP port
+long: Serve a Compose HTTP API over a unix socket or TCP port
+usage: docker compose serve [DIR]
+pname: docker compose
+plink: docker_compose.yaml
+options:
+    - option: allowed-origins
+      value_type: stringArray
+      default_value: '[]'
+      description: Allowed CORS origins; repeat the flag to allow multiple origins
+      deprecated: false
+      hidden: false
+      experimental: false
+      experimentalcli: false
+      kubernetes: false
+      swarm: false
+    - option: exclude
+      value_type: stringArray
+      default_value: '[.gocache,node_modules,.jj,.git]'
+      description: Directory names to exclude while crawling
+      deprecated: false
+      hidden: false
+      experimental: false
+      experimentalcli: false
+      kubernetes: false
+      swarm: false
+    - option: max-depth
+      value_type: int
+      default_value: "4"
+      description: Maximum directory depth to crawl for Compose files
+      deprecated: false
+      hidden: false
+      experimental: false
+      experimentalcli: false
+      kubernetes: false
+      swarm: false
+    - option: port
+      shorthand: p
+      value_type: int
+      default_value: "0"
+      description: Listen on the given TCP port instead of a unix socket
+      deprecated: false
+      hidden: false
+      experimental: false
+      experimentalcli: false
+      kubernetes: false
+      swarm: false
+inherited_options:
+    - option: dry-run
+      value_type: bool
+      default_value: "false"
+      description: Execute command in dry run mode
+      deprecated: false
+      hidden: false
+      experimental: false
+      experimentalcli: false
+      kubernetes: false
+      swarm: false
+deprecated: false
+hidden: false
+experimental: false
+experimentalcli: false
+kubernetes: false
+swarm: false
+
