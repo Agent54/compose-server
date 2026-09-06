@@ -374,7 +374,8 @@ jobs:
         with:
           files: ./bin/release/*
           generate_release_notes: true
-          draft: true
+          draft: false
+          prerelease: true
           # never replace assets already uploaded to an existing release
           # (softprops updates an existing release for the tag instead of failing)
           overwrite_files: false
