@@ -92,6 +92,11 @@ type projectActionRequest struct {
 	Signal          string   `json:"signal,omitempty"`
 }
 
+type containerActionRequest struct {
+	Path      string `json:"path,omitempty"`
+	Container string `json:"container"`
+}
+
 type rmRequest struct {
 	Path     string   `json:"path,omitempty"`
 	Services []string `json:"services,omitempty"`
@@ -366,6 +371,39 @@ func (a *serverApp) startProject(ctx context.Context, projectName string, req pr
 		}
 	}
 	return a.actionResult(projects[0], name, ""), nil
+}
+
+func (a *serverApp) startContainer(ctx context.Context, projectName string, req containerActionRequest) (actionResponse, error) {
+	if projectName == "" {
+		return actionResponse{}, errdefs.InvalidParameter(fmt.Errorf("project is required"))
+	}
+	if req.Container == "" {
+		return actionResponse{}, errdefs.InvalidParameter(fmt.Errorf("container is required"))
+	}
+
+	runtime, err := a.dockerRuntime()
+	if err != nil {
+		return actionResponse{}, err
+	}
+
+	name := projectName
+	var project *types.Project
+	if req.Path != "" {
+		project, _, name, err = a.resolvePSProject(ctx, projectName, req.Path)
+		if err != nil {
+			return actionResponse{}, err
+		}
+	}
+
+	ctr, err := a.resolveTargetContainer(ctx, runtime.client, name, project, req.Path, req.Container, "", 0)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	if _, err := runtime.client.ContainerStart(ctx, ctr.ID, mobyclient.ContainerStartOptions{}); err != nil {
+		return actionResponse{}, err
+	}
+
+	return a.actionResult(project, name, fmt.Sprintf("started container %s", containerDisplayName(ctr))), nil
 }
 
 func (a *serverApp) stopProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {

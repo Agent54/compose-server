@@ -134,6 +134,7 @@ func TestRootReturnsSchemaFromRouteDefinitions(t *testing.T) {
 	assert.Equal(t, schema.Routes[0].Path, "/")
 	assert.Equal(t, schema.Routes[0].Method, http.MethodGet)
 	assert.Assert(t, hasRoute(schema.Routes, http.MethodPost, "/start/{project}"))
+	assert.Assert(t, hasRoute(schema.Routes, http.MethodPost, "/start/{project}/container"))
 	assert.Assert(t, hasRoute(schema.Routes, http.MethodGet, "/events/{project}"))
 	assert.Assert(t, hasRoute(schema.Routes, http.MethodGet, "/stats/{project}"))
 	assert.Assert(t, hasRoute(schema.Routes, http.MethodGet, "/builds"))

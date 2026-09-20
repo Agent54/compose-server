@@ -21,9 +21,13 @@ import (
 	"testing"
 
 	"github.com/compose-spec/compose-go/v2/types"
+	containertypes "github.com/moby/moby/api/types/container"
+	mobyclient "github.com/moby/moby/client"
+	"go.uber.org/mock/gomock"
 	"gotest.tools/v3/assert"
 
 	composeapi "github.com/docker/compose/v5/pkg/api"
+	"github.com/docker/compose/v5/pkg/mocks"
 )
 
 func TestPrepareProjectForWatchMarksDevelopBuildServicesForRebuild(t *testing.T) {
@@ -83,4 +87,40 @@ func TestAnalogUpCommandIncludesWatchBuildAndRemoveOrphans(t *testing.T) {
 
 	assert.Assert(t, strings.Contains(command, "-f /abs/path/to/docker-compose.yaml"))
 	assert.Assert(t, strings.Contains(command, "up --watch --build --remove-orphans ui"))
+}
+
+func TestStartContainerTargetsOneContainer(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	apiClient := mocks.NewMockAPIClient(mockCtrl)
+	apiClient.EXPECT().ContainerList(gomock.Any(), gomock.Any()).Return(mobyclient.ContainerListResult{
+		Items: []containertypes.Summary{
+			{
+				ID:    "web-1-id",
+				Names: []string{"/demo-web-1"},
+				Labels: map[string]string{
+					composeapi.ServiceLabel:         "web",
+					composeapi.ContainerNumberLabel: "1",
+				},
+			},
+			{
+				ID:    "web-2-id",
+				Names: []string{"/demo-web-2"},
+				Labels: map[string]string{
+					composeapi.ServiceLabel:         "web",
+					composeapi.ContainerNumberLabel: "2",
+				},
+			},
+		},
+	}, nil)
+	apiClient.EXPECT().ContainerStart(gomock.Any(), "web-2-id", mobyclient.ContainerStartOptions{}).Return(mobyclient.ContainerStartResult{}, nil)
+
+	app := newServerApp(serveConfig{}, nil, func() (statsRuntime, error) {
+		return statsRuntime{client: apiClient}, nil
+	})
+	resp, err := app.startContainer(t.Context(), "demo", containerActionRequest{Container: "demo-web-2"})
+
+	assert.NilError(t, err)
+	assert.Equal(t, resp.OK, true)
+	assert.Equal(t, resp.Project, "demo")
+	assert.Equal(t, resp.Message, "started container demo-web-2")
 }

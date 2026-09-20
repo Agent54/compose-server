@@ -240,6 +240,18 @@ func (r *composeRouter) startProject(ctx context.Context, w http.ResponseWriter,
 	return writeJSON(w, http.StatusOK, resp)
 }
 
+func (r *composeRouter) startContainer(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
+	var body containerActionRequest
+	if err := decodeJSONBody(req, &body); err != nil {
+		return err
+	}
+	resp, err := r.app.startContainer(ctx, vars["project"], body)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, resp)
+}
+
 func (r *composeRouter) stopProject(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
 	var body projectActionRequest
 	if err := decodeJSONBody(req, &body); err != nil {
@@ -618,6 +630,16 @@ func serveRoutes() []routeSpec {
 				{Name: "waitTimeoutSeconds", Type: "integer", Description: "Maximum wait duration in seconds"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.startProject },
+		},
+		{
+			method:  http.MethodPost,
+			path:    "/start/{project}/container",
+			summary: "Start one existing container for a project",
+			bodyFields: []bodyFieldSpec{
+				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
+				{Name: "container", Type: "string", Description: "Exact container ID or name"},
+			},
+			handler: func(r *composeRouter) httputils.APIFunc { return r.startContainer },
 		},
 		{
 			method:  http.MethodPost,
