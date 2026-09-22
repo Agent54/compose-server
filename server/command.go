@@ -225,18 +225,23 @@ func ensureSocketDir(socketPath string) error {
 }
 
 func mergeStacks(existing []composeapi.Stack, discovered []composeapi.Stack) []composeapi.Stack {
-	seen := map[string]struct{}{}
+	indices := map[string]int{}
 	merged := make([]composeapi.Stack, 0, len(existing)+len(discovered))
 	for _, stack := range existing {
 		merged = append(merged, stack)
-		seen[stack.Name] = struct{}{}
+		indices[stack.Name] = len(merged) - 1
 	}
 	for _, stack := range discovered {
-		if _, ok := seen[stack.Name]; ok {
+		if index, ok := indices[stack.Name]; ok {
+			// Runtime state is authoritative for status, but it only knows about
+			// compose files attached to currently listed containers. Preserve the
+			// complete set found by discovery so a stopped project variant does not
+			// disappear from the API while another variant is still running.
+			merged[index].ConfigFiles = mergeConfigFiles(merged[index].ConfigFiles, stack.ConfigFiles)
 			continue
 		}
 		merged = append(merged, stack)
-		seen[stack.Name] = struct{}{}
+		indices[stack.Name] = len(merged) - 1
 	}
 	slices.SortFunc(merged, func(a, b composeapi.Stack) int {
 		if a.Name < b.Name {
@@ -248,6 +253,18 @@ func mergeStacks(existing []composeapi.Stack, discovered []composeapi.Stack) []c
 		return 0
 	})
 	return merged
+}
+
+func mergeConfigFiles(values ...string) string {
+	files := make([]string, 0)
+	for _, value := range values {
+		for _, file := range splitPathList(value) {
+			if !slices.Contains(files, file) {
+				files = append(files, file)
+			}
+		}
+	}
+	return strings.Join(files, ",")
 }
 
 func newDiscoveryOptions(cfg serveConfig) discoveryOptions {

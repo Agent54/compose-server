@@ -60,14 +60,18 @@ func TestSocketPathForDirUsesProvidedDirectoryVerbatim(t *testing.T) {
 
 func TestMergeStacksKeepsExistingAndAddsUncreated(t *testing.T) {
 	merged := mergeStacks(
-		[]composeapi.Stack{{Name: "running", Status: "running(1)"}},
-		[]composeapi.Stack{{Name: "running", Status: "uncreated"}, {Name: "fresh", Status: "uncreated"}},
+		[]composeapi.Stack{{Name: "running", Status: "running(1)", ConfigFiles: "/work/first/compose.yaml"}},
+		[]composeapi.Stack{
+			{Name: "running", Status: "uncreated", ConfigFiles: "/work/first/compose.yaml,/work/second/compose.yaml"},
+			{Name: "fresh", Status: "uncreated"},
+		},
 	)
 	assert.Equal(t, len(merged), 2)
 	assert.Equal(t, merged[0].Name, "fresh")
 	assert.Equal(t, merged[0].Status, "uncreated")
 	assert.Equal(t, merged[1].Name, "running")
 	assert.Equal(t, merged[1].Status, "running(1)")
+	assert.Equal(t, merged[1].ConfigFiles, "/work/first/compose.yaml,/work/second/compose.yaml")
 }
 
 func TestWrapCORSAllowsConfiguredOrigin(t *testing.T) {
