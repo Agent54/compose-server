@@ -596,9 +596,10 @@ func (a *serverApp) psProject(ctx context.Context, projectName string, path stri
 	if err != nil {
 		return nil, err
 	}
+	includeAll := all || len(statuses) > 0
 	containers, err := backend.Ps(ctx, name, composeapi.PsOptions{
 		Project:  project,
-		All:      all || len(statuses) > 0,
+		All:      includeAll,
 		Services: services,
 	})
 	if err != nil {
@@ -607,8 +608,8 @@ func (a *serverApp) psProject(ctx context.Context, projectName string, path stri
 		}
 		containers = nil
 	}
-	if len(containers) == 0 && project != nil {
-		containers = parsedProjectContainers(project, services)
+	if project != nil && (includeAll || len(containers) == 0) {
+		containers = mergeProjectContainers(containers, parsedProjectContainers(project, services))
 	}
 	if len(statuses) > 0 {
 		containers = filterByStatus(containers, statuses)
@@ -623,6 +624,23 @@ func (a *serverApp) psProject(ctx context.Context, projectName string, path stri
 		return 0
 	})
 	return containers, nil
+}
+
+func mergeProjectContainers(containers, defined []composeapi.ContainerSummary) []composeapi.ContainerSummary {
+	presentServices := make(map[string]struct{}, len(containers))
+	for _, container := range containers {
+		presentServices[container.Service] = struct{}{}
+	}
+
+	merged := slices.Clone(containers)
+	for _, container := range defined {
+		if _, ok := presentServices[container.Service]; ok {
+			continue
+		}
+		merged = append(merged, container)
+		presentServices[container.Service] = struct{}{}
+	}
+	return merged
 }
 
 type logsRequest struct {

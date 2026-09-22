@@ -92,6 +92,9 @@ func findComposeDirectories(options discoveryOptions) ([]string, error) {
 		if rel != "." && slices.Contains(excluded, d.Name()) {
 			return filepath.SkipDir
 		}
+		if rel != "." && strings.HasPrefix(d.Name(), checkoutStagePrefix) {
+			return filepath.SkipDir
+		}
 		if depth > maxDepth {
 			return filepath.SkipDir
 		}

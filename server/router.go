@@ -35,7 +35,8 @@ import (
 )
 
 type composeRouter struct {
-	app *serverApp
+	app      *serverApp
+	checkout *repoCheckoutService
 }
 
 type queryParamSpec struct {
@@ -88,7 +89,10 @@ var acceptedListFilters = map[string]bool{
 }
 
 func newRouter(app *serverApp) router.Router {
-	return &composeRouter{app: app}
+	return &composeRouter{
+		app:      app,
+		checkout: newRepoCheckoutService(app.config.rootDir),
+	}
 }
 
 func (r *composeRouter) Routes() []router.Route {
@@ -582,6 +586,17 @@ func serveRoutes() []routeSpec {
 			path:    "/system/df",
 			summary: "Return Docker daemon disk usage from the socket this server uses",
 			handler: func(r *composeRouter) httputils.APIFunc { return r.systemDiskUsage },
+		},
+		{
+			method:  http.MethodPost,
+			path:    "/repos/checkout",
+			summary: "Clone an HTTPS Git repository beneath the serve root",
+			bodyFields: []bodyFieldSpec{
+				{Name: "url", Type: "string", Description: "Credential-free HTTPS Git repository URL"},
+				{Name: "path", Type: "string", Description: "Optional parent path of up to three components beneath the serve root"},
+				{Name: "depth", Type: "integer", Description: "Optional Git history depth from 1 to 100; defaults to 100 (Git initially fetches one branch)"},
+			},
+			handler: func(r *composeRouter) httputils.APIFunc { return r.checkoutRepository },
 		},
 		{
 			method:  http.MethodPost,

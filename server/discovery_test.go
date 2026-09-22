@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/compose-spec/compose-go/v2/types"
+	containertypes "github.com/moby/moby/api/types/container"
 	"gotest.tools/v3/assert"
 
 	composeapi "github.com/docker/compose/v5/pkg/api"
@@ -120,6 +121,46 @@ func TestParsedProjectContainersUseProjectMetadata(t *testing.T) {
 		composeapi.ProjectLabel: "demo",
 		composeapi.ServiceLabel: "web",
 	})
+}
+
+func TestMergeProjectContainersAddsMissingDiscoveredServices(t *testing.T) {
+	project := &types.Project{
+		Name: "darc",
+		Services: types.Services{
+			"darc": {
+				Name: "darc",
+				CustomLabels: map[string]string{
+					composeapi.ConfigFilesLabel: "/work/darc/compose.yaml",
+				},
+			},
+			"vscode": {
+				Name: "vscode",
+				CustomLabels: map[string]string{
+					composeapi.ConfigFilesLabel: "/work/darc-code/compose.yaml",
+				},
+			},
+		},
+	}
+	running := composeapi.ContainerSummary{
+		ID:      "running-darc",
+		Name:    "darc-darc-1",
+		Project: "darc",
+		Service: "darc",
+		State:   containertypes.StateRunning,
+		Status:  "Up",
+	}
+
+	containers := mergeProjectContainers(
+		[]composeapi.ContainerSummary{running},
+		parsedProjectContainers(project, nil),
+	)
+
+	assert.Equal(t, len(containers), 2)
+	assert.DeepEqual(t, containers[0], running)
+	assert.Equal(t, containers[1].Name, "darc-vscode-1")
+	assert.Equal(t, containers[1].Service, "vscode")
+	assert.Equal(t, string(containers[1].State), "uncreated")
+	assert.Equal(t, containers[1].Labels[composeapi.ConfigFilesLabel], "/work/darc-code/compose.yaml")
 }
 
 func TestMergeLoadedProjectsCombinesServicesAndComposeFiles(t *testing.T) {
