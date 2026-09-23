@@ -1,0 +1,93 @@
+name: int autorelease
+
+on:
+  push:
+    branches:
+      - int
+
+permissions:
+  actions: write # dispatch the existing CI workflow on the new tag
+  contents: write # push the release tag
+
+jobs:
+  tag-and-dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Select and push integration tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Describe the pushed int commit using tags already in this fork.
+          # Tags on unrelated branches, or newer tags elsewhere, are ignored.
+          git fetch --quiet --no-tags origin 'refs/tags/v*:refs/tags/v*'
+          if ! last_tag=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$GITHUB_SHA"); then
+            echo '::error::No version tag is reachable from this int commit'
+            exit 1
+          fi
+          if [[ ! $last_tag =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)(-int\.[1-9][0-9]*)?$ ]]; then
+            echo "::error::Unsupported int branch version tag: $last_tag"
+            exit 1
+          fi
+          base_tag=${BASH_REMATCH[1]}
+
+          prefix="${base_tag}-int."
+          tag=''
+          # GitHub's default concurrency queue discards older pending runs.
+          # Let pushes run independently and retry if another run wins a tag.
+          for attempt in {1..10}; do
+            git fetch --quiet --no-tags origin 'refs/tags/v*:refs/tags/v*'
+            maximum=0
+            existing=''
+            while IFS= read -r candidate; do
+              [[ $candidate == "$prefix"* ]] || continue
+              suffix=${candidate#"$prefix"}
+              [[ $suffix =~ ^[1-9][0-9]*$ ]] || continue
+              number=$((10#$suffix))
+              if (( number > maximum )); then
+                maximum=$number
+              fi
+              # Reuse the same tag when a failed run is retried.
+              if [[ $(git rev-parse "refs/tags/${candidate}^{commit}") == "$GITHUB_SHA" ]]; then
+                existing=$candidate
+              fi
+            done < <(git for-each-ref --format='%(refname:strip=2)' refs/tags)
+
+            if [[ -n $existing ]]; then
+              tag=$existing
+              break
+            fi
+            candidate="${prefix}$((maximum + 1))"
+            git tag "$candidate" "$GITHUB_SHA"
+            if git push origin "refs/tags/$candidate"; then
+              tag=$candidate
+              break
+            fi
+            git tag -d "$candidate"
+            if ! git ls-remote --exit-code --refs --tags origin "refs/tags/$candidate" >/dev/null; then
+              echo "::error::Could not push $candidate (not a tag collision)"
+              exit 1
+            fi
+            echo "Tag $candidate was taken concurrently; retrying ($attempt/10)"
+          done
+          if [[ -z $tag ]]; then
+            echo '::error::Could not allocate an integration tag after 10 attempts'
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $tag"
+
+      # A tag pushed with GITHUB_TOKEN does not trigger push workflows. An
+      # explicit dispatch runs the existing CI build and release jobs on it.
+      # Pass an empty debug input so CI does not start a tmate session.
+      - name: Build and publish the tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_TAG" -f debug_enabled=
