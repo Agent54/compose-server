@@ -377,13 +377,19 @@ func TestCheckoutGitEnvironmentDisablesAskpass(t *testing.T) {
 	t.Setenv("SSH_ASKPASS", "/tmp/should-not-run")
 	t.Setenv("GIT_ASKPASS", "/tmp/should-not-run")
 	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GH_DEBUG", "api")
+	t.Setenv("GH_PROMPT_DISABLED", "0")
+	t.Setenv("GH_NO_UPDATE_NOTIFIER", "0")
 	environment := checkoutGitEnvironment()
 	for _, value := range environment {
 		assert.Assert(t, !strings.HasPrefix(value, "SSH_ASKPASS="), value)
 		assert.Assert(t, !strings.HasPrefix(value, "GIT_CONFIG_COUNT="), value)
+		assert.Assert(t, !strings.HasPrefix(value, "GH_DEBUG="), value)
 	}
 	assert.Assert(t, containsEnvironmentValue(environment, "GIT_ASKPASS="))
 	assert.Assert(t, containsEnvironmentValue(environment, "GIT_TERMINAL_PROMPT=0"))
+	assert.Assert(t, containsEnvironmentValue(environment, "GH_PROMPT_DISABLED=1"))
+	assert.Assert(t, containsEnvironmentValue(environment, "GH_NO_UPDATE_NOTIFIER=1"))
 }
 
 func TestComposeDiscoverySkipsCheckoutStage(t *testing.T) {
