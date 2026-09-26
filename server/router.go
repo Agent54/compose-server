@@ -649,10 +649,11 @@ func serveRoutes() []routeSpec {
 		{
 			method:  http.MethodPost,
 			path:    "/start/{project}/container",
-			summary: "Start one existing container for a project",
+			summary: "Start one container, creating the first service container if needed",
 			bodyFields: []bodyFieldSpec{
 				{Name: "path", Type: "string", Description: "Optional project directory, compose file path, or comma-separated compose file list"},
 				{Name: "container", Type: "string", Description: "Exact container ID or name"},
+				{Name: "service", Type: "string", Description: "Create or start only the first container of this service; requires path and excludes container"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.startContainer },
 		},

@@ -54,14 +54,15 @@ type statsRuntime struct {
 }
 
 type serverApp struct {
-	config       serveConfig
-	backend      backendFactory
-	stats        statsRuntimeFactory
-	watches      *watchRegistry
-	logs         *logRegistry
-	execs        *execRegistry
-	builds       *buildRegistry
-	listOverride func(context.Context, composeapi.ListOptions) ([]composeapi.Stack, error)
+	containerStartMu sync.Mutex
+	config           serveConfig
+	backend          backendFactory
+	stats            statsRuntimeFactory
+	watches          *watchRegistry
+	logs             *logRegistry
+	execs            *execRegistry
+	builds           *buildRegistry
+	listOverride     func(context.Context, composeapi.ListOptions) ([]composeapi.Stack, error)
 }
 
 type upRequest struct {
@@ -94,7 +95,8 @@ type projectActionRequest struct {
 
 type containerActionRequest struct {
 	Path      string `json:"path,omitempty"`
-	Container string `json:"container"`
+	Container string `json:"container,omitempty"`
+	Service   string `json:"service,omitempty"`
 }
 
 type rmRequest struct {
@@ -376,6 +378,9 @@ func (a *serverApp) startProject(ctx context.Context, projectName string, req pr
 func (a *serverApp) startContainer(ctx context.Context, projectName string, req containerActionRequest) (actionResponse, error) {
 	if projectName == "" {
 		return actionResponse{}, errdefs.InvalidParameter(fmt.Errorf("project is required"))
+	}
+	if req.Service != "" {
+		return a.startServiceContainer(ctx, projectName, req)
 	}
 	if req.Container == "" {
 		return actionResponse{}, errdefs.InvalidParameter(fmt.Errorf("container is required"))
