@@ -32,7 +32,7 @@ import (
 
 // startServiceContainer creates at most one service replica, then starts it through Compose.
 // Dependencies and other replicas are never started by this operation.
-func (a *serverApp) startServiceContainer(ctx context.Context, projectName string, req containerActionRequest) (actionResponse, error) {
+func (a *serverApp) startServiceContainer(ctx context.Context, projectName string, req containerActionRequest) (result actionResponse, startErr error) {
 	if req.Container != "" || req.Path == "" {
 		return actionResponse{}, errdefs.InvalidParameter(fmt.Errorf("service start requires path and cannot include container"))
 	}
@@ -41,7 +41,18 @@ func (a *serverApp) startServiceContainer(ctx context.Context, projectName strin
 		return actionResponse{}, err
 	}
 	defer unlock()
-	project, backend, err := a.loadServiceProject(ctx, projectName, req.Path, req.Service)
+	buildID := a.builds.start(projectName)
+	defer func() {
+		if startErr != nil {
+			_, _ = fmt.Fprintf(a.builds.writer(buildID, projectName, "stderr"), "%v\n", startErr)
+		}
+		a.builds.finish(buildID, startErr == nil)
+	}()
+	backend, err := a.instrumentedBuildBackend(buildID, projectName)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	project, err := a.loadServiceProject(ctx, projectName, req.Path, req.Service, backend)
 	if err != nil {
 		return actionResponse{}, err
 	}
@@ -56,36 +67,34 @@ func (a *serverApp) startServiceContainer(ctx context.Context, projectName strin
 	if err := backend.Start(ctx, project.Name, composeapi.StartOptions{Project: project, ContainerID: ctr.ID}); err != nil {
 		return actionResponse{}, err
 	}
-	return a.actionResult(project, project.Name, fmt.Sprintf("started container %s", containerDisplayName(ctr))), nil
+	result = a.actionResult(project, project.Name, fmt.Sprintf("started container %s", containerDisplayName(ctr)))
+	result.BuildID, result.BuildURL = buildID, buildURL(buildID)
+	return result, nil
 }
 
 // loadServiceProject activates the named service's profiles during loading, then
 // excludes dependencies before resolving env files or other runtime resources.
-func (a *serverApp) loadServiceProject(ctx context.Context, name, path, service string) (*types.Project, composeapi.Compose, error) {
+func (a *serverApp) loadServiceProject(ctx context.Context, name, path, service string, backend composeapi.Compose) (*types.Project, error) {
 	ref, err := a.resolveProjectLoadRef(path)
 	if err != nil {
-		return nil, nil, err
-	}
-	backend, err := a.backend()
-	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	project, err := backend.LoadProject(ctx, composeapi.ProjectLoadOptions{
 		WorkingDir: ref.workingDir, ConfigPaths: ref.configPaths, Services: []string{service},
 		Offline: true, ProjectOptionsFns: runtimeProjectLoadOptions(),
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if project.Name != name {
-		return nil, nil, errdefs.InvalidParameter(fmt.Errorf("project %q does not match requested project %q", project.Name, name))
+		return nil, errdefs.InvalidParameter(fmt.Errorf("project %q does not match requested project %q", project.Name, name))
 	}
 	project, err = project.WithSelectedServices([]string{service}, types.IgnoreDependencies)
 	if err != nil {
-		return nil, nil, errdefs.InvalidParameter(err)
+		return nil, errdefs.InvalidParameter(err)
 	}
 	project, err = runtimeProject(project.WithoutUnnecessaryResources())
-	return project, backend, err
+	return project, err
 }
 
 // ensureSingleServiceContainer reuses replica one or creates it additively when
@@ -108,6 +117,7 @@ func ensureSingleServiceContainer(ctx context.Context, backend composeapi.Compos
 	selected.Services[service] = config
 	selected = selected.WithoutUnnecessaryResources()
 	if err := backend.Create(ctx, selected, composeapi.CreateOptions{
+		Build:    &composeapi.BuildOptions{Services: []string{service}, Progress: "plain"},
 		Services: []string{service}, Recreate: composeapi.RecreateNever,
 		RecreateDependencies: composeapi.RecreateNever, IgnoreOrphans: true,
 		Additive: true,

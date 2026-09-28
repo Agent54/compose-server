@@ -19,7 +19,9 @@ package serve
 import (
 	"context"
 	"fmt"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -47,11 +49,12 @@ func TestStartUncreatedServiceCreatesAndStartsOnlyOneContainer(t *testing.T) {
 			"web": {
 				Name:      "web",
 				Image:     "web",
+				Build:     &types.BuildConfig{Context: directory},
 				Scale:     &replicas,
 				Deploy:    &types.DeployConfig{Replicas: &replicas},
 				DependsOn: types.DependsOnConfig{"db": {Condition: "service_started", Required: true}},
 			},
-			"db": {Name: "db", Image: "db"},
+			"db": {Name: "db", Image: "db", Build: &types.BuildConfig{Context: filepath.Join(directory, "db")}},
 		},
 	}
 	container := containertypes.Summary{ID: "web-1", Labels: map[string]string{
@@ -70,6 +73,10 @@ func TestStartUncreatedServiceCreatesAndStartsOnlyOneContainer(t *testing.T) {
 				assert.Equal(t, options.RemoveOrphans, false)
 				assert.Equal(t, options.Recreate, composeapi.RecreateNever)
 				assert.Equal(t, options.Additive, true)
+				assert.Assert(t, options.Build != nil, "missing service images must be built before container creation")
+				assert.DeepEqual(t, options.Build.Services, []string{"web"})
+				assert.Equal(t, options.Build.Deps, false)
+				assert.Equal(t, options.Build.Progress, "plain")
 				return nil
 			}),
 		client.EXPECT().ContainerList(gomock.Any(), gomock.Any()).Return(mobyclient.ContainerListResult{Items: []containertypes.Summary{container}}, nil),
@@ -86,9 +93,29 @@ func TestStartUncreatedServiceCreatesAndStartsOnlyOneContainer(t *testing.T) {
 	response, err := app.startContainer(t.Context(), "demo", containerActionRequest{Path: directory, Service: "web"})
 	assert.NilError(t, err)
 	assert.Equal(t, response.OK, true)
+	assert.Equal(t, response.BuildID, "1")
+	assert.Equal(t, response.BuildURL, buildURL("1"))
+	activity := app.listBuilds()
+	assert.Equal(t, len(activity), 1)
+	assert.Equal(t, activity[0].Status, "succeeded")
 	assert.Equal(t, len(project.Services), 2)
 	web := project.Services["web"]
 	assert.Equal(t, web.GetScale(), 3)
+}
+
+func TestServiceContainerFailureIsRecordedInActivity(t *testing.T) {
+	app, client, directory := realContainerApp(t, "name: demo\nservices:\n  web:\n    image: test-image\n    network_mode: none\n")
+	failure := "cannot inspect service containers"
+	client.EXPECT().ContainerList(gomock.Any(), gomock.Any()).Return(mobyclient.ContainerListResult{}, fmt.Errorf("%s", failure))
+	_, err := app.startContainer(t.Context(), "demo", containerActionRequest{Path: directory, Service: "web"})
+	assert.ErrorContains(t, err, failure)
+	activity := app.listBuilds()
+	assert.Equal(t, len(activity), 1)
+	assert.Equal(t, activity[0].Project, "demo")
+	assert.Equal(t, activity[0].Status, "failed")
+	stream := httptest.NewRecorder()
+	assert.NilError(t, app.streamBuild(t.Context(), activity[0].ID, stream))
+	assert.Assert(t, strings.Contains(stream.Body.String(), failure), stream.Body.String())
 }
 
 func TestEnsureSingleServiceContainerPreservesExistingReplicas(t *testing.T) {

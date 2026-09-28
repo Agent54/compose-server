@@ -140,6 +140,13 @@ configs:
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
 	assert.Equal(t, response.Code, http.StatusOK, response.Body.String())
+	activity := app.listBuilds()
+	assert.Equal(t, len(activity), 1)
+	assert.Equal(t, activity[0].Status, "succeeded")
+	stream := httptest.NewRecorder()
+	assert.NilError(t, app.streamBuild(t.Context(), activity[0].ID, stream))
+	assert.Assert(t, strings.Contains(stream.Body.String(), "Starting"), stream.Body.String())
+	assert.Assert(t, strings.Contains(stream.Body.String(), "Started"), stream.Body.String())
 }
 
 func TestServiceContainerCreatesOnlyFirstAndRunsPreStart(t *testing.T) {
