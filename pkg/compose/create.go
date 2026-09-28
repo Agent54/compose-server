@@ -114,6 +114,13 @@ func (s *composeService) create(ctx context.Context, project *types.Project, opt
 	}
 	observed.setResolvedNetworks(externalNetworks, project)
 	observed.setResolvedVolumes(externalVolumes)
+	if options.Additive {
+		for name := range project.Services {
+			if len(observed.Containers[name]) > 0 {
+				return errdefs.ErrConflict.WithMessage(fmt.Sprintf("service %q already has containers; additive create cannot converge existing replicas", name))
+			}
+		}
+	}
 	warnUnmanagedNetworks(project, observed)
 	warnUnmanagedVolumes(project, observed)
 
@@ -124,9 +131,20 @@ func (s *composeService) create(ctx context.Context, project *types.Project, opt
 			"--remove-orphans flag to clean it up.", observed.orphanNames())
 	}
 
-	plan, err := reconcile(ctx, project, observed, toReconcileOptions(options), s.prompt)
+	prompt := s.prompt
+	if options.Additive {
+		// Include proposed volume replacements in the plan without prompting.
+		// The additive guard rejects them before any plan operation executes.
+		prompt = func(string, bool) (bool, error) { return true, nil }
+	}
+	plan, err := reconcile(ctx, project, observed, toReconcileOptions(options), prompt)
 	if err != nil {
 		return err
+	}
+	if options.Additive {
+		if err := validateAdditiveCreate(plan, observed); err != nil {
+			return err
+		}
 	}
 
 	// Emit "Running" events for containers that are already up-to-date, so
@@ -134,6 +152,28 @@ func (s *composeService) create(ctx context.Context, project *types.Project, opt
 	emitRunningEvents(project, observed, plan, s.events)
 
 	return s.executePlan(ctx, project, observed, plan)
+}
+
+// validateAdditiveCreate permits only creation of missing resources. Existing
+// network/volume keys cannot be replaced or renamed, even by an additive plan.
+func validateAdditiveCreate(plan *Plan, observed *ObservedState) error {
+	for _, node := range plan.Nodes {
+		op := node.Operation
+		switch op.Type {
+		case OpCreateContainer:
+			continue
+		case OpCreateNetwork:
+			if len(observed.Networks[strings.TrimPrefix(op.ResourceID, "network:")]) == 0 {
+				continue
+			}
+		case OpCreateVolume:
+			if len(observed.Volumes[strings.TrimPrefix(op.ResourceID, "volume:")]) == 0 {
+				continue
+			}
+		}
+		return errdefs.ErrConflict.WithMessage(fmt.Sprintf("additive create cannot %s %s", op.Type, op.ResourceID))
+	}
+	return nil
 }
 
 func prepareNetworks(project *types.Project) {

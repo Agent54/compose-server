@@ -304,12 +304,21 @@ type CreateOptions struct {
 	QuietPull bool
 	// SkipProviders skips provider services during convergence (e.g. watch rebuild)
 	SkipProviders bool
+	// Additive rejects existing containers of enabled services and plans that
+	// modify existing resources. Only missing containers, networks and volumes
+	// may be created; resource replacement never prompts for confirmation.
+	Additive bool
 }
 
 // StartOptions group options of the Start API
 type StartOptions struct {
 	// Project is the compose project used to define this app. Might be nil if user ran command just with project name
 	Project *types.Project
+	// ContainerID limits startup and Wait to this exact existing container ID.
+	// Other replicas and services are not started. The selected container still
+	// receives secrets/configs and lifecycle hooks; pre_start runs only when no
+	// replica of its service is running.
+	ContainerID string
 	// Attach receives the containers' logs during Up's foreground session.
 	// It doubles as the mode switch: when nil, Up returns once containers
 	// are started (detached mode); when set, Up keeps running the

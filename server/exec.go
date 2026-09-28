@@ -150,6 +150,11 @@ func (a *serverApp) execInContainer(ctx context.Context, projectName string, req
 	if err != nil {
 		return containerExecResponse{}, err
 	}
+	unlock, err := a.lockProjectMutation(ctx, name)
+	if err != nil {
+		return containerExecResponse{}, err
+	}
+	defer unlock()
 	ctr, err := a.resolveTargetContainer(ctx, runtime.client, name, project, req.Path, req.Container, req.Service, req.Index)
 	if err != nil {
 		return containerExecResponse{}, err

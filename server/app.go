@@ -54,15 +54,15 @@ type statsRuntime struct {
 }
 
 type serverApp struct {
-	containerStartMu sync.Mutex
-	config           serveConfig
-	backend          backendFactory
-	stats            statsRuntimeFactory
-	watches          *watchRegistry
-	logs             *logRegistry
-	execs            *execRegistry
-	builds           *buildRegistry
-	listOverride     func(context.Context, composeapi.ListOptions) ([]composeapi.Stack, error)
+	mutations    projectMutationLocks
+	config       serveConfig
+	backend      backendFactory
+	stats        statsRuntimeFactory
+	watches      *watchRegistry
+	logs         *logRegistry
+	execs        *execRegistry
+	builds       *buildRegistry
+	listOverride func(context.Context, composeapi.ListOptions) ([]composeapi.Stack, error)
 }
 
 type upRequest struct {
@@ -220,6 +220,11 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 	}
 
 	var buildID string
+	unlock, err := a.lockProjectMutation(ctx, projectName)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	defer unlock()
 	if req.Build {
 		buildID = a.builds.start(projectName)
 		backend, err = a.instrumentedBuildBackend(buildID, projectName)
@@ -360,6 +365,11 @@ func (a *serverApp) startProject(ctx context.Context, projectName string, req pr
 	if err != nil {
 		return actionResponse{}, err
 	}
+	unlock, err := a.lockProjectMutation(ctx, name)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	defer unlock()
 	for _, project := range projects {
 		services, _ := servicesForProject(project, req.Services)
 		if err := backend.Start(ctx, name, composeapi.StartOptions{
@@ -400,6 +410,11 @@ func (a *serverApp) startContainer(ctx context.Context, projectName string, req 
 		}
 	}
 
+	unlock, err := a.lockProjectMutation(ctx, name)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	defer unlock()
 	ctr, err := a.resolveTargetContainer(ctx, runtime.client, name, project, req.Path, req.Container, "", 0)
 	if err != nil {
 		return actionResponse{}, err
@@ -424,6 +439,11 @@ func (a *serverApp) stopProject(ctx context.Context, projectName string, req pro
 	if err != nil {
 		return actionResponse{}, err
 	}
+	unlock, err := a.lockProjectMutation(ctx, name)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	defer unlock()
 	for _, project := range projects {
 		services, _ := servicesForProject(project, req.Services)
 		if err := backend.Stop(ctx, name, composeapi.StopOptions{
@@ -450,6 +470,11 @@ func (a *serverApp) restartProject(ctx context.Context, projectName string, req 
 	if err != nil {
 		return actionResponse{}, err
 	}
+	unlock, err := a.lockProjectMutation(ctx, name)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	defer unlock()
 	for _, project := range projects {
 		services, _ := servicesForProject(project, req.Services)
 		if err := backend.Restart(ctx, name, composeapi.RestartOptions{
@@ -477,6 +502,12 @@ func (a *serverApp) downProject(ctx context.Context, projectName string, req pro
 	if err != nil {
 		return actionResponse{}, err
 	}
+	a.stopWatch(name)
+	unlock, err := a.lockProjectMutation(ctx, name)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	defer unlock()
 	for _, project := range projects {
 		services, _ := servicesForProject(project, req.Services)
 		if err := backend.Down(ctx, name, composeapi.DownOptions{
@@ -502,6 +533,11 @@ func (a *serverApp) rmProject(ctx context.Context, projectName string, req rmReq
 	if err != nil {
 		return actionResponse{}, err
 	}
+	unlock, err := a.lockProjectMutation(ctx, name)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	defer unlock()
 	for _, project := range projects {
 		services, _ := servicesForProject(project, req.Services)
 		if err := backend.Remove(ctx, name, composeapi.RemoveOptions{
@@ -521,6 +557,11 @@ func (a *serverApp) pauseProject(ctx context.Context, projectName string, req pr
 	if err != nil {
 		return actionResponse{}, err
 	}
+	unlock, err := a.lockProjectMutation(ctx, name)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	defer unlock()
 	if err := backend.Pause(ctx, name, composeapi.PauseOptions{
 		Project:  project,
 		Services: req.Services,
@@ -535,6 +576,11 @@ func (a *serverApp) unpauseProject(ctx context.Context, projectName string, req 
 	if err != nil {
 		return actionResponse{}, err
 	}
+	unlock, err := a.lockProjectMutation(ctx, name)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	defer unlock()
 	if err := backend.UnPause(ctx, name, composeapi.PauseOptions{
 		Project:  project,
 		Services: req.Services,
@@ -549,6 +595,11 @@ func (a *serverApp) killProject(ctx context.Context, projectName string, req pro
 	if err != nil {
 		return actionResponse{}, err
 	}
+	unlock, err := a.lockProjectMutation(ctx, name)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	defer unlock()
 	if err := backend.Kill(ctx, name, composeapi.KillOptions{
 		RemoveOrphans: req.RemoveOrphans,
 		Project:       project,
@@ -568,6 +619,11 @@ func (a *serverApp) commitProject(ctx context.Context, projectName string, req c
 	if err != nil {
 		return actionResponse{}, err
 	}
+	unlock, err := a.lockProjectMutation(ctx, name)
+	if err != nil {
+		return actionResponse{}, err
+	}
+	defer unlock()
 	pause := true
 	if req.Pause != nil {
 		pause = *req.Pause
@@ -799,6 +855,11 @@ func (a *serverApp) streamWatch(ctx context.Context, projectName string, w http.
 
 func (a *serverApp) startWatch(projectName string, projects []*types.Project, requestedServices []string, build bool, removeOrphans bool) error {
 	return a.watches.start(projectName, func(ctx context.Context, consumer composeapi.LogConsumer) error {
+		unlock, err := a.mutations.lock(ctx, projectName)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 		eg, ctx := errgroup.WithContext(ctx)
 		for _, project := range projects {
 			eg.Go(func() error {

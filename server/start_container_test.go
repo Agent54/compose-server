@@ -69,10 +69,16 @@ func TestStartUncreatedServiceCreatesAndStartsOnlyOneContainer(t *testing.T) {
 				assert.DeepEqual(t, options.Services, []string{"web"})
 				assert.Equal(t, options.RemoveOrphans, false)
 				assert.Equal(t, options.Recreate, composeapi.RecreateNever)
+				assert.Equal(t, options.Additive, true)
 				return nil
 			}),
 		client.EXPECT().ContainerList(gomock.Any(), gomock.Any()).Return(mobyclient.ContainerListResult{Items: []containertypes.Summary{container}}, nil),
-		client.EXPECT().ContainerStart(gomock.Any(), "web-1", mobyclient.ContainerStartOptions{}).Return(mobyclient.ContainerStartResult{}, nil),
+		backend.EXPECT().Start(gomock.Any(), "demo", gomock.Any()).DoAndReturn(func(_ context.Context, _ string, options composeapi.StartOptions) error {
+			assert.Equal(t, options.ContainerID, "web-1")
+			assert.Equal(t, len(options.Project.Services), 1)
+			assert.Equal(t, len(options.Project.Services["web"].DependsOn), 0)
+			return nil
+		}),
 	)
 	app := newServerApp(serveConfig{rootDir: directory}, func(...composepkg.Option) (composeapi.Compose, error) {
 		return backend, nil

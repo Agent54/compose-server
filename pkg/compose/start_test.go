@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"go.uber.org/mock/gomock"
@@ -339,4 +340,32 @@ func TestGetDependencyCondition(t *testing.T) {
 
 	assert.Equal(t, getDependencyCondition(oneShot, project), types.ServiceConditionCompletedSuccessfully)
 	assert.Equal(t, getDependencyCondition(web, project), ServiceConditionRunningOrHealthy)
+}
+
+func TestStartContainerIDRejectsMissingOrUnselectedContainer(t *testing.T) {
+	for _, id := range []string{"missing", "prj-db-1-id"} {
+		t.Run(id, func(t *testing.T) {
+			svc, apiClient, _ := newStartTestService(t)
+			apiClient.EXPECT().ContainerList(gomock.Any(), gomock.Any()).Return(client.ContainerListResult{Items: []container.Summary{serviceContainer("db", 1, container.StateExited)}}, nil)
+			project := &types.Project{Name: "prj", Services: types.Services{"web": {Name: "web"}}}
+			err := svc.Start(t.Context(), "prj", api.StartOptions{Project: project, ContainerID: id})
+			assert.Assert(t, err != nil)
+			if id == "missing" {
+				assert.Assert(t, errdefs.IsNotFound(err))
+			}
+		})
+	}
+}
+
+func TestStartContainerIDWaitsOnlyForSelectedReplica(t *testing.T) {
+	svc, apiClient, _ := newStartTestService(t)
+	first := serviceContainer("web", 1, container.StateRunning)
+	second := serviceContainer("web", 2, container.StateExited)
+	apiClient.EXPECT().ContainerList(gomock.Any(), gomock.Any()).Return(client.ContainerListResult{Items: []container.Summary{first, second}}, nil)
+	apiClient.EXPECT().ContainerInspect(gomock.Any(), first.ID, gomock.Any()).Return(client.ContainerInspectResult{
+		Container: container.InspectResponse{Name: first.Names[0], State: &container.State{Status: container.StateRunning}, Config: &container.Config{}},
+	}, nil)
+	project := &types.Project{Name: "prj", Services: types.Services{"web": {Name: "web"}}}
+	err := svc.Start(t.Context(), "prj", api.StartOptions{Project: project, ContainerID: first.ID, Wait: true})
+	assert.NilError(t, err)
 }

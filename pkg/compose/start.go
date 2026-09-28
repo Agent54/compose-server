@@ -23,6 +23,8 @@ import (
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/containerd/errdefs"
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 
 	"github.com/docker/compose/v5/pkg/api"
@@ -61,6 +63,9 @@ func (s *composeService) start(ctx context.Context, projectName string, options 
 		return err
 	}
 	containers := Containers(res.Items)
+	if options.ContainerID != "" {
+		return s.startContainerByID(ctx, project, containers, options, listener)
+	}
 
 	err = InDependencyOrder(ctx, project, func(c context.Context, name string) error {
 		service, err := project.GetService(name)
@@ -97,6 +102,46 @@ func (s *composeService) start(ctx context.Context, projectName string, options 
 		}
 	}
 
+	return nil
+}
+
+// startContainerByID preserves the service startup pipeline while limiting its
+// mutations and health wait to one container. All replicas remain visible when
+// deciding whether the service's pre_start hooks need to run.
+func (s *composeService) startContainerByID(ctx context.Context, project *types.Project, containers Containers, options api.StartOptions, listener api.ContainerEventListener) error {
+	selected := containers.filter(func(ctr container.Summary) bool { return ctr.ID == options.ContainerID })
+	if len(selected) != 1 {
+		return errdefs.ErrNotFound.WithMessage(fmt.Sprintf("container %q not found in project %q", options.ContainerID, project.Name))
+	}
+	ctr := selected[0]
+	service, err := project.GetService(ctr.Labels[api.ServiceLabel])
+	if err != nil {
+		return err
+	}
+	if err := s.waitDependencies(ctx, project, service.Name, service.DependsOn, containers, options.WaitTimeout); err != nil {
+		return err
+	}
+	if isNotRunning(ctr) {
+		replicas := containers.filter(isService(service.Name), isNotOneOff)
+		if len(service.PreStart) > 0 && len(replicas.filter(isNotRunning)) == len(replicas) {
+			if err := s.runPreStart(ctx, project, service, ctr, listener); err != nil {
+				return err
+			}
+		}
+		if err := s.startServiceContainer(ctx, project, service, ctr, listener); err != nil {
+			return err
+		}
+	}
+	if options.Wait {
+		if options.WaitTimeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, options.WaitTimeout)
+			defer cancel()
+		}
+		return s.waitDependencies(ctx, project, project.Name, types.DependsOnConfig{
+			service.Name: {Condition: getDependencyCondition(service, project), Required: true},
+		}, selected, 0)
+	}
 	return nil
 }
 

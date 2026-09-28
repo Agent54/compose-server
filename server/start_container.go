@@ -19,6 +19,7 @@ package serve
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -29,19 +30,18 @@ import (
 	"github.com/docker/compose/v5/server/errdefs"
 )
 
-// startServiceContainer creates at most one container, then starts it by ID.
+// startServiceContainer creates at most one service replica, then starts it through Compose.
 // Dependencies and other replicas are never started by this operation.
 func (a *serverApp) startServiceContainer(ctx context.Context, projectName string, req containerActionRequest) (actionResponse, error) {
 	if req.Container != "" || req.Path == "" {
 		return actionResponse{}, errdefs.InvalidParameter(fmt.Errorf("service start requires path and cannot include container"))
 	}
-	// Serialize create-if-missing requests so each observes the previous create.
-	a.containerStartMu.Lock()
-	defer a.containerStartMu.Unlock()
-	if err := ctx.Err(); err != nil {
+	unlock, err := a.lockProjectMutation(ctx, projectName)
+	if err != nil {
 		return actionResponse{}, err
 	}
-	project, backend, name, err := a.resolveActionProject(ctx, projectName, req.Path)
+	defer unlock()
+	project, backend, err := a.loadServiceProject(ctx, projectName, req.Path, req.Service)
 	if err != nil {
 		return actionResponse{}, err
 	}
@@ -53,12 +53,43 @@ func (a *serverApp) startServiceContainer(ctx context.Context, projectName strin
 	if err != nil {
 		return actionResponse{}, err
 	}
-	if _, err := runtime.client.ContainerStart(ctx, ctr.ID, mobyclient.ContainerStartOptions{}); err != nil {
+	if err := backend.Start(ctx, project.Name, composeapi.StartOptions{Project: project, ContainerID: ctr.ID}); err != nil {
 		return actionResponse{}, err
 	}
-	return a.actionResult(project, name, fmt.Sprintf("started container %s", containerDisplayName(ctr))), nil
+	return a.actionResult(project, project.Name, fmt.Sprintf("started container %s", containerDisplayName(ctr))), nil
 }
 
+// loadServiceProject activates the named service's profiles during loading, then
+// excludes dependencies before resolving env files or other runtime resources.
+func (a *serverApp) loadServiceProject(ctx context.Context, name, path, service string) (*types.Project, composeapi.Compose, error) {
+	ref, err := a.resolveProjectLoadRef(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	backend, err := a.backend()
+	if err != nil {
+		return nil, nil, err
+	}
+	project, err := backend.LoadProject(ctx, composeapi.ProjectLoadOptions{
+		WorkingDir: ref.workingDir, ConfigPaths: ref.configPaths, Services: []string{service},
+		Offline: true, ProjectOptionsFns: runtimeProjectLoadOptions(),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	if project.Name != name {
+		return nil, nil, errdefs.InvalidParameter(fmt.Errorf("project %q does not match requested project %q", project.Name, name))
+	}
+	project, err = project.WithSelectedServices([]string{service}, types.IgnoreDependencies)
+	if err != nil {
+		return nil, nil, errdefs.InvalidParameter(err)
+	}
+	project, err = runtimeProject(project.WithoutUnnecessaryResources())
+	return project, backend, err
+}
+
+// ensureSingleServiceContainer reuses replica one or creates it additively when
+// the entire project/service identity is absent. Other replicas are preserved.
 func ensureSingleServiceContainer(ctx context.Context, backend composeapi.Compose, client mobyclient.APIClient, project *types.Project, service string) (containertypes.Summary, error) {
 	selected, err := project.WithSelectedServices([]string{service}, types.IgnoreDependencies)
 	if err != nil {
@@ -79,6 +110,7 @@ func ensureSingleServiceContainer(ctx context.Context, backend composeapi.Compos
 	if err := backend.Create(ctx, selected, composeapi.CreateOptions{
 		Services: []string{service}, Recreate: composeapi.RecreateNever,
 		RecreateDependencies: composeapi.RecreateNever, IgnoreOrphans: true,
+		Additive: true,
 	}); err != nil {
 		return containertypes.Summary{}, err
 	}
@@ -89,21 +121,29 @@ func ensureSingleServiceContainer(ctx context.Context, backend composeapi.Compos
 	return firstServiceContainer(containers)
 }
 
+// singleServiceContainers observes the same project/service identity as Create.
+// A config-file mismatch is an ownership conflict, not an absent container.
 func singleServiceContainers(ctx context.Context, client mobyclient.APIClient, project *types.Project, service string) ([]containertypes.Summary, error) {
 	containers, err := listProjectContainers(ctx, client, project.Name, true, []string{service})
 	if err != nil {
 		return nil, err
 	}
-	containers = filterContainersByConfigFiles(containers, project.ComposeFiles)
 	regular := make([]containertypes.Summary, 0, len(containers))
 	for _, ctr := range containers {
+		if ctr.Labels[composeapi.HookLabel] != "" {
+			continue
+		}
 		if !strings.EqualFold(ctr.Labels[composeapi.OneoffLabel], "true") {
+			if !slices.Equal(splitPathList(ctr.Labels[composeapi.ConfigFilesLabel]), project.ComposeFiles) {
+				return nil, errdefs.Conflict(fmt.Errorf("container %s belongs to project %q service %q with different config files", containerDisplayName(ctr), project.Name, service))
+			}
 			regular = append(regular, ctr)
 		}
 	}
 	return regular, nil
 }
 
+// firstServiceContainer selects replica one without converging the service scale.
 func firstServiceContainer(containers []containertypes.Summary) (containertypes.Summary, error) {
 	for _, ctr := range containers {
 		if ctr.Labels[composeapi.ContainerNumberLabel] == "1" {
@@ -111,5 +151,5 @@ func firstServiceContainer(containers []containertypes.Summary) (containertypes.
 		}
 	}
 	// Do not scale down an existing service just because its first replica is missing.
-	return containertypes.Summary{}, errdefs.NotFound(fmt.Errorf("first service container is missing; create it in Compose"))
+	return containertypes.Summary{}, errdefs.NotFound(fmt.Errorf("first service container is missing; select an existing container by ID or name"))
 }
