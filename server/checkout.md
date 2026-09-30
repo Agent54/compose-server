@@ -11,6 +11,18 @@ The request is unchanged for public and private GitHub repositories:
 repository is placed directly under the stacks root in its own named directory.
 `depth` defaults to 100 and must be between 1 and 100.
 
+Checkout parents may contain unrelated files, sockets, symlinks, and sibling
+projects. The actual parent path must contain only directories, with no
+symlinks, and the repository destination must not already exist.
+
+To prevent accidental nesting, the server checks the serve root and each parent
+component for `.git` (including Git worktree files) and the default Compose and
+override filenames used by discovery. A project marker causes an HTTP 409
+response identifying the parent and marker. Nested checkout is always rejected;
+there is no override. Choose a grouping directory outside the existing project.
+The guard checks ancestors within the serve root, rather than files inside the
+cloned repository.
+
 ## Private GitHub repositories
 
 Install Git and GitHub CLI (`gh`) on the host running compose-server. Sign in once

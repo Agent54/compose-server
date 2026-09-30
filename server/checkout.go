@@ -37,6 +37,8 @@ import (
 	"sync"
 	"time"
 
+	composecli "github.com/compose-spec/compose-go/v2/cli"
+
 	"github.com/docker/compose/v5/server/errdefs"
 )
 
@@ -148,9 +150,6 @@ func (s *repoCheckoutService) checkout(ctx context.Context, request repoCheckout
 	if err != nil {
 		return repoCheckoutResponse{}, err
 	}
-	if err := requireDirectoryOnlyEntries(root, parent); err != nil {
-		return repoCheckoutResponse{}, err
-	}
 	if err := requireAbsentCheckoutDestination(root, destination); err != nil {
 		return repoCheckoutResponse{}, err
 	}
@@ -171,7 +170,7 @@ func (s *repoCheckoutService) checkout(ctx context.Context, request repoCheckout
 	if err := chmodCheckoutStage(root, stage, 0o755); err != nil {
 		return repoCheckoutResponse{}, err
 	}
-	if err := requireAbsentCheckoutDestination(root, destination); err != nil {
+	if err := preflightCheckoutPath(root, components, destination); err != nil {
 		return repoCheckoutResponse{}, err
 	}
 	if err := operationCtx.Err(); err != nil {
@@ -256,7 +255,7 @@ func validateCheckoutPathComponent(component string) error {
 
 func ensureCheckoutParent(root *os.Root, components []string) (string, error) {
 	current := "."
-	if err := requireDirectoryOnlyEntries(root, current); err != nil {
+	if err := requireCheckoutGroupingParent(root, current); err != nil {
 		return "", err
 	}
 	for _, component := range components {
@@ -277,7 +276,7 @@ func ensureCheckoutParent(root *os.Root, components []string) (string, error) {
 		if !info.IsDir() {
 			return "", errdefs.Conflict(fmt.Errorf("checkout path component %q is not a directory", component))
 		}
-		if err := requireDirectoryOnlyEntries(root, next); err != nil {
+		if err := requireCheckoutGroupingParent(root, next); err != nil {
 			return "", err
 		}
 		current = next
@@ -287,7 +286,7 @@ func ensureCheckoutParent(root *os.Root, components []string) (string, error) {
 
 func preflightCheckoutPath(root *os.Root, components []string, destination string) error {
 	current := "."
-	if err := requireDirectoryOnlyEntries(root, current); err != nil {
+	if err := requireCheckoutGroupingParent(root, current); err != nil {
 		return err
 	}
 	for _, component := range components {
@@ -305,37 +304,25 @@ func preflightCheckoutPath(root *os.Root, components []string, destination strin
 		if !info.IsDir() {
 			return errdefs.Conflict(fmt.Errorf("checkout path component %q is not a directory", component))
 		}
-		if err := requireDirectoryOnlyEntries(root, current); err != nil {
+		if err := requireCheckoutGroupingParent(root, current); err != nil {
 			return err
 		}
 	}
 	return requireAbsentCheckoutDestination(root, destination)
 }
 
-func requireDirectoryOnlyEntries(root *os.Root, dir string) error {
-	opened, err := root.Open(dir)
-	if err != nil {
-		return fmt.Errorf("inspect checkout parent: %w", err)
-	}
-	defer func() { _ = opened.Close() }()
-	entries, err := opened.ReadDir(-1)
-	if err != nil {
-		return fmt.Errorf("inspect checkout parent: %w", err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() {
+func requireCheckoutGroupingParent(root *os.Root, dir string) error {
+	markers := append([]string{".git"}, composecli.DefaultFileNames...)
+	markers = append(markers, composecli.DefaultOverrideFileNames...)
+	for _, marker := range markers {
+		_, err := root.Lstat(filepath.Join(dir, marker))
+		if os.IsNotExist(err) {
 			continue
 		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return errdefs.InvalidParameter(fmt.Errorf("checkout parent contains symlink %q", entry.Name()))
+		if err != nil {
+			return fmt.Errorf("inspect checkout parent %q: %w", dir, err)
 		}
-		if dir == "." && entry.Name() == "compose.sock" {
-			info, infoErr := entry.Info()
-			if infoErr == nil && info.Mode()&os.ModeSocket != 0 {
-				continue
-			}
-		}
-		return errdefs.Conflict(fmt.Errorf("checkout parent contains non-directory entry %q", entry.Name()))
+		return errdefs.Conflict(fmt.Errorf("checkout parent %q contains project marker %q; nested repository checkout is not allowed; choose a grouping directory", dir, marker))
 	}
 	return nil
 }

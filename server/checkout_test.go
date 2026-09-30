@@ -215,14 +215,72 @@ func TestRepoCheckoutPreservesExistingEmptyDestination(t *testing.T) {
 	assert.Equal(t, info.Mode().Perm(), os.FileMode(0o700))
 }
 
-func TestRepoCheckoutRejectsFilesInParent(t *testing.T) {
+func TestRepoCheckoutPreservesSiblingFiles(t *testing.T) {
+	for _, requestPath := range []string{"", "team/product/dev"} {
+		t.Run(requestPath, func(t *testing.T) {
+			root := t.TempDir()
+			components, err := checkoutPathComponents(requestPath)
+			assert.NilError(t, err)
+			parents := []string{root}
+			for _, component := range components {
+				parent := filepath.Join(parents[len(parents)-1], component)
+				assert.NilError(t, os.Mkdir(parent, 0o755))
+				parents = append(parents, parent)
+			}
+			for _, parent := range parents {
+				for _, name := range []string{".DS_Store", "notes.txt", "compose.sock"} {
+					assert.NilError(t, os.WriteFile(filepath.Join(parent, name), []byte("keep"), 0o644))
+				}
+			}
+			service := fakeRepoCheckoutService(root, writeFakeCheckout)
+
+			response, err := service.checkout(t.Context(), repoCheckoutRequest{
+				URL:  "https://example.com/acme/demo.git",
+				Path: requestPath,
+			})
+
+			assert.NilError(t, err)
+			assert.Equal(t, response.Path, filepath.ToSlash(filepath.Join(requestPath, "demo")))
+			_, err = os.Stat(filepath.Join(root, filepath.FromSlash(response.Path), "compose.yaml"))
+			assert.NilError(t, err)
+			for _, parent := range parents {
+				for _, name := range []string{".DS_Store", "notes.txt", "compose.sock"} {
+					content, err := os.ReadFile(filepath.Join(parent, name))
+					assert.NilError(t, err)
+					assert.Equal(t, string(content), "keep")
+				}
+			}
+		})
+	}
+}
+
+func TestRepoCheckoutPreservesSiblingSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires additional privileges on Windows")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "unrelated")
+	assert.NilError(t, os.Symlink(outside, link))
+	service := fakeRepoCheckoutService(root, writeFakeCheckout)
+
+	_, err := service.checkout(t.Context(), repoCheckoutRequest{URL: "https://example.com/acme/demo.git"})
+
+	assert.NilError(t, err)
+	target, err := os.Readlink(link)
+	assert.NilError(t, err)
+	assert.Equal(t, target, outside)
+	entries, err := os.ReadDir(outside)
+	assert.NilError(t, err)
+	assert.Equal(t, len(entries), 0)
+}
+
+func TestRepoCheckoutRejectsFileInPath(t *testing.T) {
 	root := t.TempDir()
 	parent := filepath.Join(root, "team")
-	assert.NilError(t, os.Mkdir(parent, 0o755))
-	assert.NilError(t, os.WriteFile(filepath.Join(parent, "notes.txt"), []byte("keep"), 0o644))
-	called := false
+	assert.NilError(t, os.WriteFile(parent, []byte("keep"), 0o644))
 	service := fakeRepoCheckoutService(root, func(context.Context, string, string, int) error {
-		called = true
+		t.Fatal("invalid parent reached Git clone")
 		return nil
 	})
 
@@ -232,7 +290,95 @@ func TestRepoCheckoutRejectsFilesInParent(t *testing.T) {
 	})
 
 	assert.Assert(t, errdefs.IsConflict(err))
-	assert.Assert(t, !called)
+	content, err := os.ReadFile(parent)
+	assert.NilError(t, err)
+	assert.Equal(t, string(content), "keep")
+}
+
+func TestRepoCheckoutRejectsNestedProject(t *testing.T) {
+	markers := []struct {
+		name string
+		file string
+		dir  bool
+	}{
+		{name: "Git repository", file: ".git", dir: true},
+		{name: "Git worktree", file: ".git"},
+		{name: "compose.yaml", file: "compose.yaml"},
+		{name: "compose.yml", file: "compose.yml"},
+		{name: "docker-compose.yaml", file: "docker-compose.yaml"},
+		{name: "docker-compose.yml", file: "docker-compose.yml"},
+		{name: "compose.override.yaml", file: "compose.override.yaml"},
+		{name: "compose.override.yml", file: "compose.override.yml"},
+		{name: "docker-compose.override.yaml", file: "docker-compose.override.yaml"},
+		{name: "docker-compose.override.yml", file: "docker-compose.override.yml"},
+	}
+	for _, marker := range markers {
+		for _, parentPath := range []string{"", "team", "team/product"} {
+			t.Run(marker.name+"/"+parentPath, func(t *testing.T) {
+				root := t.TempDir()
+				assert.NilError(t, os.MkdirAll(filepath.Join(root, "team", "product"), 0o755))
+				markerPath := filepath.Join(root, parentPath, marker.file)
+				if marker.dir {
+					assert.NilError(t, os.Mkdir(markerPath, 0o755))
+				} else {
+					assert.NilError(t, os.WriteFile(markerPath, []byte("keep"), 0o644))
+				}
+				service := fakeRepoCheckoutService(root, func(context.Context, string, string, int) error {
+					t.Fatal("nested project reached Git clone")
+					return nil
+				})
+
+				_, err := service.checkout(t.Context(), repoCheckoutRequest{
+					URL:  "https://example.com/acme/demo.git",
+					Path: "team/product/new",
+				})
+
+				assert.Assert(t, errdefs.IsConflict(err))
+				assert.ErrorContains(t, err, marker.file)
+				assert.ErrorContains(t, err, "nested repository checkout is not allowed")
+				_, err = os.Stat(filepath.Join(root, "team", "product", "new"))
+				assert.Assert(t, os.IsNotExist(err))
+			})
+		}
+	}
+}
+
+func TestRepoCheckoutAllowsSiblingProjects(t *testing.T) {
+	root := t.TempDir()
+	assert.NilError(t, writeFakeCheckout(t.Context(), "", filepath.Join(root, "another-stack"), 1))
+	assert.NilError(t, os.Mkdir(filepath.Join(root, "another-stack", ".git"), 0o755))
+	service := fakeRepoCheckoutService(root, writeFakeCheckout)
+
+	_, err := service.checkout(t.Context(), repoCheckoutRequest{URL: "https://example.com/acme/demo.git"})
+
+	assert.NilError(t, err)
+	directories, err := findComposeDirectories(discoveryOptions{rootDir: root, maxDepth: 3})
+	assert.NilError(t, err)
+	assert.DeepEqual(t, directories, []string{filepath.Join(root, "another-stack"), filepath.Join(root, "demo")})
+}
+
+func TestRepoCheckoutRejectsProjectMarkerCreatedDuringClone(t *testing.T) {
+	for _, parentPath := range []string{"", "team"} {
+		t.Run(parentPath, func(t *testing.T) {
+			root := t.TempDir()
+			assert.NilError(t, os.Mkdir(filepath.Join(root, "team"), 0o755))
+			service := fakeRepoCheckoutService(root, func(ctx context.Context, repositoryURL, destination string, depth int) error {
+				assert.NilError(t, os.WriteFile(filepath.Join(root, parentPath, "compose.yaml"), []byte("keep"), 0o644))
+				return writeFakeCheckout(ctx, repositoryURL, destination, depth)
+			})
+
+			_, err := service.checkout(t.Context(), repoCheckoutRequest{
+				URL:  "https://example.com/acme/demo.git",
+				Path: "team/new",
+			})
+
+			assert.Assert(t, errdefs.IsConflict(err))
+			assert.ErrorContains(t, err, "compose.yaml")
+			_, err = os.Stat(filepath.Join(root, "team", "new"))
+			assert.Assert(t, os.IsNotExist(err))
+			assertNoTemporaryCheckouts(t, filepath.Join(root, "team"))
+		})
+	}
 }
 
 func TestRepoCheckoutRejectsNonEmptyDestination(t *testing.T) {
@@ -430,6 +576,40 @@ func TestCheckoutRepositoryRoute(t *testing.T) {
 	assert.Equal(t, response.Path, "demo")
 	assert.Equal(t, response.Depth, 25)
 	assert.Assert(t, hasRoute(schemaFromRouteSpecs(), http.MethodPost, "/repos/checkout"))
+}
+
+func TestCheckoutRepositoryRouteNestedProject(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   string
+		status int
+	}{
+		{name: "default guard", body: `{"url":"https://example.com/acme/demo.git"}`, status: http.StatusConflict},
+		{name: "override cannot bypass guard", body: `{"url":"https://example.com/acme/demo.git","allowNested":true}`, status: http.StatusConflict},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			assert.NilError(t, os.Mkdir(filepath.Join(root, ".git"), 0o755))
+			router := &composeRouter{
+				app:      newServerApp(serveConfig{rootDir: root}, nil, nil),
+				checkout: fakeRepoCheckoutService(root, writeFakeCheckout),
+			}
+			req := httptest.NewRequest(http.MethodPost, "/repos/checkout", strings.NewReader(test.body))
+			req.Header.Set("Content-Type", "application/json")
+			resp := httptest.NewRecorder()
+
+			err := withJSONError(router.checkoutRepository)(t.Context(), resp, req, nil)
+
+			assert.NilError(t, err)
+			assert.Equal(t, resp.Code, test.status)
+			if test.status == http.StatusConflict {
+				assert.Assert(t, strings.Contains(resp.Body.String(), "nested repository checkout is not allowed"))
+				_, err = os.Stat(filepath.Join(root, "demo"))
+				assert.Assert(t, os.IsNotExist(err))
+			}
+		})
+	}
 }
 
 func fakeRepoCheckoutService(root string, clone repoCloneFunc) *repoCheckoutService {

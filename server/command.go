@@ -44,19 +44,23 @@ import (
 const defaultMaxDepth = 4
 
 type serveConfig struct {
-	rootDir        string
-	maxDepth       int
-	excludedDir    []string
-	allowedOrigins []string
+	rootDir         string
+	socketPath      string
+	guestStacksPath string
+	maxDepth        int
+	excludedDir     []string
+	allowedOrigins  []string
 }
 
 // NewCommand creates the compose daemon command.
 func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.Command {
 	var (
-		port           int
-		maxDepth       int
-		exclusions     []string
-		allowedOrigins []string
+		port            int
+		socketPath      string
+		guestStacksPath string
+		maxDepth        int
+		exclusions      []string
+		allowedOrigins  []string
 	)
 
 	cmd := &cobra.Command{
@@ -68,16 +72,21 @@ func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.C
 			defer stop()
 
 			cfg := serveConfig{
-				rootDir:        ".",
-				maxDepth:       maxDepth,
-				excludedDir:    slices.Clone(exclusions),
-				allowedOrigins: slices.Clone(allowedOrigins),
+				rootDir:         ".",
+				socketPath:      socketPath,
+				guestStacksPath: guestStacksPath,
+				maxDepth:        maxDepth,
+				excludedDir:     slices.Clone(exclusions),
+				allowedOrigins:  slices.Clone(allowedOrigins),
 			}
 			if len(args) > 0 {
 				cfg.rootDir = args[0]
 			}
 			if err := prepareServeEnvironment(&cfg); err != nil {
 				return err
+			}
+			if cfg.guestStacksPath != "" {
+				backendOpts = append(slices.Clone(backendOpts), composepkg.WithBindPathMapping(cfg.rootDir, cfg.guestStacksPath))
 			}
 
 			target, err := serveTargetForConfig(cfg, port)
@@ -111,6 +120,8 @@ func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.C
 		},
 	}
 	cmd.Flags().IntVarP(&port, "port", "p", 0, "Listen on the given TCP port instead of a unix socket")
+	cmd.Flags().StringVar(&socketPath, "socket", "", "Unix socket path (defaults to DIR/compose.sock)")
+	cmd.Flags().StringVar(&guestStacksPath, "guest-stacks-path", "", "Translate stack bind sources to this guest directory")
 	cmd.Flags().IntVar(&maxDepth, "max-depth", defaultMaxDepth, "Maximum directory depth to crawl for Compose files")
 	cmd.Flags().StringArrayVar(&exclusions, "exclude", slices.Clone(defaultExcludedDirs), "Directory names to exclude while crawling")
 	cmd.Flags().StringArrayVar(&allowedOrigins, "allowed-origins", nil, "Allowed CORS origins; repeat the flag to allow multiple origins")
@@ -195,6 +206,9 @@ func serveTargetForConfig(cfg serveConfig, port int) (serveTarget, error) {
 		return serveTarget{network: "tcp", address: fmt.Sprintf("127.0.0.1:%d", port)}, nil
 	}
 
+	if cfg.socketPath != "" {
+		return serveTarget{network: "unix", address: cfg.socketPath}, nil
+	}
 	socketPath, err := socketPathForDir(cfg.rootDir)
 	if err != nil {
 		return serveTarget{}, err

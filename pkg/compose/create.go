@@ -1013,6 +1013,11 @@ func (s *composeService) buildContainerVolumes(
 	for _, m := range mountOptions {
 		switch m.Type {
 		case mount.TypeBind:
+			guestSource, err := s.bindPathMapping.guestSource(m.Source)
+			if err != nil {
+				return nil, nil, err
+			}
+			m.Source = guestSource
 			// `Mount` is preferred but does not offer option to created host path if missing
 			// so `Bind` API is used here with raw volume string
 			// see https://github.com/moby/moby/issues/43483

@@ -36,6 +36,13 @@ func TestServeTargetForArgsUsesPortWhenSet(t *testing.T) {
 	assert.Equal(t, target.address, "127.0.0.1:8080")
 }
 
+func TestServeTargetUsesExplicitSocketOutsideStacks(t *testing.T) {
+	target, err := serveTargetForConfig(serveConfig{rootDir: "/stacks", socketPath: "/control/compose.sock"}, 0)
+	assert.NilError(t, err)
+	assert.Equal(t, target.network, "unix")
+	assert.Equal(t, target.address, "/control/compose.sock")
+}
+
 func TestSocketPathForDirUsesDockerDefaultResolution(t *testing.T) {
 	prev, hadPrev := os.LookupEnv(client.EnvOverrideHost)
 	t.Cleanup(func() {
