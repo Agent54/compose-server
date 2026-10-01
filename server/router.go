@@ -193,14 +193,6 @@ func (r *composeRouter) systemInfo(ctx context.Context, w http.ResponseWriter, r
 	return writeJSON(w, http.StatusOK, info)
 }
 
-func (r *composeRouter) systemDiskUsage(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
-	usage, err := r.app.systemDiskUsage(ctx)
-	if err != nil {
-		return err
-	}
-	return writeJSON(w, http.StatusOK, usage)
-}
-
 func (r *composeRouter) upProject(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
 	var body upRequest
 	if err := decodeJSONBody(req, &body); err != nil {
@@ -580,12 +572,6 @@ func serveRoutes() []routeSpec {
 			path:    "/system",
 			summary: "Return Docker daemon host info from the socket this server uses",
 			handler: func(r *composeRouter) httputils.APIFunc { return r.systemInfo },
-		},
-		{
-			method:  http.MethodGet,
-			path:    "/system/df",
-			summary: "Return Docker daemon disk usage from the socket this server uses",
-			handler: func(r *composeRouter) httputils.APIFunc { return r.systemDiskUsage },
 		},
 		{
 			method:  http.MethodPost,

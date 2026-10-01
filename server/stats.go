@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -68,24 +69,6 @@ type systemInfoResponse struct {
 	StorageDriver     string  `json:"storageDriver,omitempty"`
 	ContainersRunning int     `json:"containersRunning"`
 	Raw               any     `json:"raw"`
-}
-
-type systemDiskUsageResponse struct {
-	OK         bool             `json:"ok"`
-	UsedBytes  int64            `json:"usedBytes"`
-	TotalBytes uint64           `json:"totalBytes,omitempty"`
-	Images     diskUsageSummary `json:"images"`
-	Containers diskUsageSummary `json:"containers"`
-	Volumes    diskUsageSummary `json:"volumes"`
-	BuildCache diskUsageSummary `json:"buildCache"`
-	Raw        any              `json:"raw"`
-}
-
-type diskUsageSummary struct {
-	ActiveCount int64 `json:"activeCount"`
-	TotalCount  int64 `json:"totalCount"`
-	UsedBytes   int64 `json:"usedBytes"`
-	Reclaimable int64 `json:"reclaimable"`
 }
 
 type resourcesRequest struct {
@@ -209,60 +192,7 @@ func (a *serverApp) systemInfo(ctx context.Context) (systemInfoResponse, error) 
 	}, nil
 }
 
-func (a *serverApp) systemDiskUsage(ctx context.Context) (systemDiskUsageResponse, error) {
-	if a.stats == nil {
-		return systemDiskUsageResponse{}, fmt.Errorf("stats runtime unavailable")
-	}
-	runtime, err := a.stats()
-	if err != nil {
-		return systemDiskUsageResponse{}, err
-	}
-	if runtime.client == nil {
-		return systemDiskUsageResponse{}, fmt.Errorf("stats runtime unavailable")
-	}
-	usage, err := runtime.client.DiskUsage(ctx, mobyclient.DiskUsageOptions{})
-	if err != nil {
-		return systemDiskUsageResponse{}, err
-	}
-	info, _ := runtime.client.Info(ctx, mobyclient.InfoOptions{})
-	usedBytes := usage.Images.TotalSize + usage.Containers.TotalSize + usage.Volumes.TotalSize + usage.BuildCache.TotalSize
-	return systemDiskUsageResponse{
-		OK:         true,
-		UsedBytes:  usedBytes,
-		TotalBytes: filesystemTotalBytes(info.Info.DockerRootDir),
-		Images: diskUsageSummary{
-			ActiveCount: usage.Images.ActiveCount,
-			TotalCount:  usage.Images.TotalCount,
-			UsedBytes:   usage.Images.TotalSize,
-			Reclaimable: usage.Images.Reclaimable,
-		},
-		Containers: diskUsageSummary{
-			ActiveCount: usage.Containers.ActiveCount,
-			TotalCount:  usage.Containers.TotalCount,
-			UsedBytes:   usage.Containers.TotalSize,
-			Reclaimable: usage.Containers.Reclaimable,
-		},
-		Volumes: diskUsageSummary{
-			ActiveCount: usage.Volumes.ActiveCount,
-			TotalCount:  usage.Volumes.TotalCount,
-			UsedBytes:   usage.Volumes.TotalSize,
-			Reclaimable: usage.Volumes.Reclaimable,
-		},
-		BuildCache: diskUsageSummary{
-			ActiveCount: usage.BuildCache.ActiveCount,
-			TotalCount:  usage.BuildCache.TotalCount,
-			UsedBytes:   usage.BuildCache.TotalSize,
-			Reclaimable: usage.BuildCache.Reclaimable,
-		},
-		Raw: usage,
-	}, nil
-}
-
 func (a *serverApp) streamStats(ctx context.Context, projectName string, req statsRequest, w http.ResponseWriter) error {
-	_, _, name, err := a.resolveActionProject(ctx, projectName, req.Path)
-	if err != nil {
-		return err
-	}
 	if a.stats == nil {
 		return fmt.Errorf("stats runtime unavailable")
 	}
@@ -274,7 +204,7 @@ func (a *serverApp) streamStats(ctx context.Context, projectName string, req sta
 		return fmt.Errorf("stats runtime unavailable")
 	}
 
-	containers, err := listProjectContainers(ctx, runtime.client, name, req.All, req.Services)
+	containers, err := a.listResourceContainers(ctx, runtime.client, projectName, req.Path, req.All, req.Services)
 	if err != nil {
 		return err
 	}
@@ -343,10 +273,6 @@ func (a *serverApp) streamStats(ctx context.Context, projectName string, req sta
 }
 
 func (a *serverApp) projectResources(ctx context.Context, projectName string, req resourcesRequest) (projectResourcesResponse, error) { //nolint:gocognit
-	project, _, name, err := a.resolvePSProject(ctx, projectName, req.Path)
-	if err != nil {
-		return projectResourcesResponse{}, err
-	}
 	if a.stats == nil {
 		return projectResourcesResponse{}, fmt.Errorf("stats runtime unavailable")
 	}
@@ -366,17 +292,13 @@ func (a *serverApp) projectResources(ctx context.Context, projectName string, re
 		return projectResourcesResponse{}, errdefs.InvalidParameter(fmt.Errorf("unsupported granularity %q", granularity))
 	}
 
-	containers, err := listProjectContainers(ctx, runtime.client, name, req.All, req.Services)
+	containers, err := a.listResourceContainers(ctx, runtime.client, projectName, req.Path, req.All, req.Services)
 	if err != nil {
 		return projectResourcesResponse{}, err
 	}
-	if req.Path != "" && project != nil {
-		containers = filterContainersByConfigFiles(containers, project.ComposeFiles)
-	}
-
 	stats := collectStatsSnapshot(ctx, runtime.client, runtime.osType, containers)
 	out := projectResourcesResponse{
-		Project:     name,
+		Project:     projectName,
 		Granularity: granularity,
 	}
 
@@ -385,7 +307,7 @@ func (a *serverApp) projectResources(ctx context.Context, projectName string, re
 		row := containerResources{
 			ID:      ctr.ID,
 			Name:    ctr.ID,
-			Project: name,
+			Project: projectName,
 			Service: ctr.Labels[composeapi.ServiceLabel],
 			State:   string(ctr.State),
 			Status:  ctr.Status,
@@ -429,13 +351,47 @@ func (a *serverApp) projectResources(ctx context.Context, projectName string, re
 		out.Containers = containerRows
 	}
 	if granularity == "all" || granularity == "service" {
-		out.Services = aggregateResourcesByService(name, containerRows)
+		out.Services = aggregateResourcesByService(projectName, containerRows)
 	}
 	if granularity == "all" || granularity == "project" {
-		summary := aggregateResourcesForProject(name, containerRows)
+		summary := aggregateResourcesForProject(projectName, containerRows)
 		out.ProjectSummary = &summary
 	}
 	return out, nil
+}
+
+// Resource sampling uses Docker labels and counters; it must not discover projects
+// or load Compose files. Paths select existing containers by their recorded metadata.
+func (a *serverApp) listResourceContainers(ctx context.Context, apiClient mobyclient.APIClient, projectName, requestPath string, all bool, services []string) ([]containertypes.Summary, error) {
+	if projectName == "" {
+		return nil, errdefs.InvalidParameter(fmt.Errorf("project is required"))
+	}
+	paths := splitPathList(requestPath)
+	for i, path := range paths {
+		resolved, err := a.resolvePathValue(a.config.rootDir, path)
+		if err != nil {
+			return nil, err
+		}
+		paths[i], err = filepath.Abs(resolved)
+		if err != nil {
+			return nil, err
+		}
+	}
+	containers, err := listProjectContainers(ctx, apiClient, projectName, all, services)
+	if err != nil || len(paths) == 0 {
+		return containers, err
+	}
+	return slices.DeleteFunc(containers, func(ctr containertypes.Summary) bool {
+		files := splitPathList(ctr.Labels[composeapi.ConfigFilesLabel])
+		return slices.ContainsFunc(paths, func(path string) bool {
+			if path == filepath.Clean(ctr.Labels[composeapi.WorkingDirLabel]) {
+				return false
+			}
+			return !slices.ContainsFunc(files, func(file string) bool {
+				return path == filepath.Clean(file) || path == filepath.Dir(file)
+			})
+		})
+	}), nil
 }
 
 func listProjectContainers(ctx context.Context, apiClient mobyclient.APIClient, projectName string, all bool, services []string) ([]containertypes.Summary, error) {
