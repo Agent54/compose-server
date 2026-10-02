@@ -775,13 +775,20 @@ func (a *serverApp) streamLogs(ctx context.Context, projectName string, req logs
 }
 
 func (a *serverApp) resolvePSProject(ctx context.Context, projectName, requestPath string) (*types.Project, composeapi.Compose, string, error) {
-	if requestPath != "" {
-		return a.resolveActionProject(ctx, projectName, requestPath)
-	}
-
 	backend, err := a.backend()
 	if err != nil {
 		return nil, nil, "", err
+	}
+	if requestPath != "" {
+		projects, name, err := a.resolveProjectVariantsWithBackend(ctx, backend, projectName, requestPath)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		var project *types.Project
+		for _, variant := range projects {
+			project = mergeLoadedProjects(project, variant)
+		}
+		return project, backend, name, nil
 	}
 	if projectName == "" {
 		return nil, nil, "", errdefs.InvalidParameter(fmt.Errorf("project is required"))
@@ -925,9 +932,24 @@ func (a *serverApp) loadProjectVariantsWithBackend(ctx context.Context, backend 
 		return []*types.Project{project}, nil
 	}
 
-	projects := make([]*types.Project, 0, len(parts))
+	// Keep each directory's base and override files together when loading
+	// same-name projects from multiple directories.
+	pathsByRoot := map[string][]string{}
+	roots := make([]string, 0, len(parts))
 	for _, part := range parts {
-		project, err := a.loadProjectWithBackend(ctx, backend, part)
+		ref, err := a.resolveProjectLoadRef(part)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := pathsByRoot[ref.workingDir]; !exists {
+			roots = append(roots, ref.workingDir)
+		}
+		pathsByRoot[ref.workingDir] = append(pathsByRoot[ref.workingDir], part)
+	}
+
+	projects := make([]*types.Project, 0, len(roots))
+	for _, root := range roots {
+		project, err := a.loadProjectWithBackend(ctx, backend, strings.Join(pathsByRoot[root], ","))
 		if err != nil {
 			return nil, err
 		}

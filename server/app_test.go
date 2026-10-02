@@ -17,6 +17,8 @@
 package serve
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -27,6 +29,7 @@ import (
 	"gotest.tools/v3/assert"
 
 	composeapi "github.com/docker/compose/v5/pkg/api"
+	composepkg "github.com/docker/compose/v5/pkg/compose"
 	"github.com/docker/compose/v5/pkg/mocks"
 )
 
@@ -123,4 +126,63 @@ func TestStartContainerTargetsOneContainer(t *testing.T) {
 	assert.Equal(t, resp.OK, true)
 	assert.Equal(t, resp.Project, "demo")
 	assert.Equal(t, resp.Message, "started container demo-web-2")
+}
+
+func TestPSUsesKnownComposePathsWithoutDiscovery(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		groups [][]string
+	}{
+		{"single file", [][]string{{"first/compose.yaml"}}},
+		{"base and override", [][]string{{"first/compose.yaml", "first/compose.override.yaml"}}},
+		{"multiple roots and overrides", [][]string{{"first/compose.yaml", "first/compose.override.yaml"}, {"second/compose.yaml", "second/compose.override.yaml"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := mocks.NewMockCompose(gomock.NewController(t))
+			// A discovery walk would fail: the serve root does not exist.
+			root := filepath.Join(t.TempDir(), "missing")
+			app := newServerApp(serveConfig{rootDir: root}, func(...composepkg.Option) (composeapi.Compose, error) { return backend, nil }, nil)
+			var paths []string
+			for index, group := range tc.groups {
+				files := make([]string, len(group))
+				for i, path := range group {
+					files[i] = filepath.Join(root, path)
+				}
+				paths = append(paths, files...)
+				service := "web"
+				if index > 0 {
+					service = "worker"
+				}
+				project := &types.Project{
+					Name: "demo", ComposeFiles: files,
+					Services: types.Services{service: {
+						Name: service, Image: "busybox",
+						CustomLabels: map[string]string{composeapi.ConfigFilesLabel: strings.Join(files, ",")},
+					}},
+				}
+				backend.EXPECT().LoadProject(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, options composeapi.ProjectLoadOptions) (*types.Project, error) {
+					assert.Equal(t, options.WorkingDir, filepath.Dir(files[0]))
+					assert.DeepEqual(t, options.ConfigPaths, files)
+					assert.Equal(t, options.Offline, true)
+					return project, nil
+				})
+			}
+			backend.EXPECT().Ps(gomock.Any(), "demo", gomock.Any()).DoAndReturn(func(_ context.Context, _ string, options composeapi.PsOptions) ([]composeapi.ContainerSummary, error) {
+				assert.Equal(t, options.All, true)
+				assert.Equal(t, len(options.Project.Services), len(tc.groups))
+				assert.DeepEqual(t, options.Project.ComposeFiles, paths)
+				return []composeapi.ContainerSummary{{ID: "running-web", Name: "demo-web-1", Service: "web", Project: "demo", State: containertypes.StateRunning}}, nil
+			})
+
+			containers, err := app.psProject(t.Context(), "demo", strings.Join(paths, ","), nil, true, nil)
+			assert.NilError(t, err)
+			assert.Equal(t, len(containers), len(tc.groups))
+			assert.Equal(t, containers[0].ID, "running-web")
+			if len(tc.groups) > 1 {
+				assert.Equal(t, containers[1].Service, "worker")
+				assert.Equal(t, string(containers[1].State), "uncreated")
+				assert.Equal(t, containers[1].Labels[composeapi.ConfigFilesLabel], strings.Join(paths[2:], ","))
+			}
+		})
+	}
 }
