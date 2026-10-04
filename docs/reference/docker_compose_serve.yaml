@@ -25,6 +25,15 @@ options:
       experimentalcli: false
       kubernetes: false
       swarm: false
+    - option: guest-stacks-path
+      value_type: string
+      description: Translate stack bind sources to this guest directory
+      deprecated: false
+      hidden: false
+      experimental: false
+      experimentalcli: false
+      kubernetes: false
+      swarm: false
     - option: max-depth
       value_type: int
       default_value: "4"
@@ -40,6 +49,15 @@ options:
       value_type: int
       default_value: "0"
       description: Listen on the given TCP port instead of a unix socket
+      deprecated: false
+      hidden: false
+      experimental: false
+      experimentalcli: false
+      kubernetes: false
+      swarm: false
+    - option: socket
+      value_type: string
+      description: Unix socket path (defaults to DIR/compose.sock)
       deprecated: false
       hidden: false
       experimental: false

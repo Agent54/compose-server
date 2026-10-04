@@ -142,22 +142,12 @@ func TestDownComposefileInParentFolder(t *testing.T) {
 }
 
 func TestAttachRestart(t *testing.T) {
-	c := NewParallelCLI(t)
-
-	cmd := c.NewDockerComposeCmd(t, "--ansi=never", "--project-directory", "./fixtures/attach-restart", "up")
-	res := icmd.StartCmd(cmd)
-	t.Cleanup(func() {
-		c.RunDockerComposeCmd(t, "-p", "attach-restart", "down")
-	})
-
-	c.WaitForCondition(t, func() (bool, string) {
-		debug := res.Combined()
-		return strings.Count(res.Stdout(),
-				"failing-1 exited with code 1") == 3, fmt.Sprintf("'failing-1 exited with code 1' not found 3 times in : \n%s\n",
-				debug)
-	}, 4*time.Minute, 2*time.Second)
-
-	assert.Equal(t, strings.Count(res.Stdout(), "failing-1  | world"), 3, res.Combined())
+	NewScenario(t, "attached up must relay each run's logs exactly once across policy restarts").
+		Step("up follows the initial run and both restarts through their final exit",
+			ComposeCmd("--ansi=never", "up", "--menu=false").Within(4*time.Minute),
+			ServiceState("failing", "exited"),
+			OutputMatchesCount("failing-1 exited with code 1", 3),
+			OutputMatchesCount("failing-1  \\| world", 3))
 }
 
 func TestInitContainer(t *testing.T) {

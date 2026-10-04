@@ -42,34 +42,19 @@ func TestUpServiceUnhealthy(t *testing.T) {
 }
 
 func TestUpDependenciesNotStopped(t *testing.T) {
-	c := NewParallelCLI(t, WithEnv(
-		"COMPOSE_PROJECT_NAME=up-deps-stop",
-	))
-
-	reset := func() {
-		c.RunDockerComposeCmdNoCheck(t, "down", "-t=0", "--remove-orphans", "-v")
-	}
-	reset()
-	t.Cleanup(reset)
-
-	t.Log("Launching orphan container (background)")
-	c.RunDockerComposeCmd(t,
-		"-f=./fixtures/ups-deps-stop/orphan.yaml",
-		"up",
-		"--wait",
-		"--detach",
-		"orphan",
-	)
-	RequireServiceState(t, c, "orphan", "running")
+	s := NewScenario(t, "interrupting attached up must stop the selected service while leaving its dependency and orphan running")
+	s.Step("the orphan starts independently",
+		ComposeCmd("-f=./fixtures/ups-deps-stop/orphan.yaml", "up", "--wait", "--detach", "orphan"),
+		ServiceState("orphan", "running"))
 
 	t.Log("Launching app container with implicit dependency")
 	upOut := &utils.SafeBuffer{}
-	testCmd := c.NewDockerComposeCmd(t,
+	testCmd := s.command(ComposeCmd(
 		"-f=./fixtures/ups-deps-stop/compose.yaml",
 		"up",
 		"--menu=false",
 		"app",
-	)
+	))
 
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	t.Cleanup(cancel)
@@ -79,8 +64,10 @@ func TestUpDependenciesNotStopped(t *testing.T) {
 
 	t.Log("Waiting for containers to be in running state")
 	upOut.RequireEventuallyContains(t, "hello app")
-	RequireServiceState(t, c, "app", "running")
-	RequireServiceState(t, c, "dependency", "running")
+	s.Step("the selected service and its dependency are both running",
+		ComposeCmd("ps", "--all"),
+		Eventually(ServiceState("app", "running"), 10*time.Second),
+		Eventually(ServiceState("dependency", "running"), 10*time.Second))
 
 	t.Log("Simulating Ctrl-C")
 	assert.NilError(t, syscall.Kill(-cmd.Process.Pid, syscall.SIGINT),
@@ -97,10 +84,11 @@ func TestUpDependenciesNotStopped(t *testing.T) {
 		assert.Equal(t, 130, exitErr.ExitCode())
 	}
 
-	RequireServiceState(t, c, "app", "exited")
-	// dependency should still be running
-	RequireServiceState(t, c, "dependency", "running")
-	RequireServiceState(t, c, "orphan", "running")
+	s.Step("the selected service stops while its dependency and orphan keep running",
+		ComposeCmd("ps", "--all"),
+		ServiceState("app", "exited"),
+		ServiceState("dependency", "running"),
+		ServiceState("orphan", "running"))
 }
 
 func TestUpWithBuildDependencies(t *testing.T) {

@@ -86,7 +86,10 @@ func TestWaitAndDrop(t *testing.T) {
 	NewScenario(t, "wait --down-project must take the whole project down once the selected service exits").
 		Step("up starts all services",
 			ComposeCmd("up", "-d")).
-		Step("wait --down-project removes every container when the service exits",
+		Step("the selected service exits before the teardown wait begins",
+			ComposeCmd("wait", "faster"),
+			ServiceState("faster", "exited")).
+		Step("wait --down-project removes every container even when the service already exited",
 			ComposeCmd("wait", "--down-project", "faster"),
 			ServiceNotCreated("faster"),
 			ServiceNotCreated("slower"),

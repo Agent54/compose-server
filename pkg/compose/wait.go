@@ -27,7 +27,7 @@ import (
 )
 
 func (s *composeService) Wait(ctx context.Context, projectName string, options api.WaitOptions) (int64, error) {
-	containers, err := s.getContainers(ctx, projectName, oneOffInclude, false, options.Services...)
+	containers, err := s.getContainers(ctx, projectName, oneOffInclude, true, options.Services...)
 	if err != nil {
 		return 0, err
 	}
