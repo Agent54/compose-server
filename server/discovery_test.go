@@ -52,6 +52,21 @@ func TestFindComposeDirectoriesHonorsDepthAndExclusions(t *testing.T) {
 	assert.Equal(t, dirs[0], filepath.Join(root, "a"))
 }
 
+func TestDiscoveryDoesNotReadDirectoriesAtDepthLimit(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read permission-restricted directories")
+	}
+	root := t.TempDir()
+	boundary := filepath.Join(root, "boundary")
+	assert.NilError(t, os.Mkdir(boundary, 0o755))
+	assert.NilError(t, os.WriteFile(filepath.Join(boundary, "compose.yaml"), []byte("services: {}"), 0o644))
+	assert.NilError(t, os.Chmod(boundary, 0o111))
+	t.Cleanup(func() { _ = os.Chmod(boundary, 0o755) })
+	dirs, err := findComposeDirectories(discoveryOptions{rootDir: root, maxDepth: 1})
+	assert.NilError(t, err)
+	assert.DeepEqual(t, dirs, []string{boundary})
+}
+
 func TestDiscoverComposeProjectsUsesParsedServiceCountForStatus(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "demo")

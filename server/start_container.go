@@ -19,6 +19,7 @@ package serve
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -144,13 +145,36 @@ func singleServiceContainers(ctx context.Context, client mobyclient.APIClient, p
 			continue
 		}
 		if !strings.EqualFold(ctr.Labels[composeapi.OneoffLabel], "true") {
-			if !slices.Equal(splitPathList(ctr.Labels[composeapi.ConfigFilesLabel]), project.ComposeFiles) {
+			if !sameConfigFiles(splitPathList(ctr.Labels[composeapi.ConfigFilesLabel]), project.ComposeFiles) {
 				return nil, errdefs.Conflict(fmt.Errorf("container %s belongs to project %q service %q with different config files", containerDisplayName(ctr), project.Name, service))
 			}
 			regular = append(regular, ctr)
 		}
 	}
 	return regular, nil
+}
+
+// Existing container labels can retain an in-tree symlink spelling while the
+// mapped server now returns canonical paths. Preserve ownership of the same
+// files without treating a genuinely different configuration as equivalent.
+func sameConfigFiles(labelled, requested []string) bool {
+	if slices.Equal(labelled, requested) {
+		return true
+	}
+	if len(labelled) != len(requested) {
+		return false
+	}
+	for index, path := range labelled {
+		left, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return false
+		}
+		right, err := filepath.EvalSymlinks(requested[index])
+		if err != nil || left != right {
+			return false
+		}
+	}
+	return true
 }
 
 // firstServiceContainer selects replica one without converging the service scale.

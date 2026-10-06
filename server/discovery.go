@@ -101,6 +101,11 @@ func findComposeDirectories(options discoveryOptions) ([]string, error) {
 		if hasDefaultComposeFile(path) {
 			found[path] = struct{}{}
 		}
+		// WalkDir reads contents after this callback. At the depth limit those
+		// children cannot be selected, so avoid listing them entirely.
+		if depth == maxDepth {
+			return filepath.SkipDir
+		}
 		return nil
 	})
 	if err != nil {

@@ -18,3 +18,12 @@ Serve a Compose HTTP API over a unix socket or TCP port
 
 <!---MARKER_GEN_END-->
 
+With `--guest-stacks-path`, project paths must resolve inside the served folder,
+including absolute paths and symlink targets. Default Compose files are selected
+only from the requested directory; the server does not search its parents.
+Existing containers whose configuration labels use an alias of the same files
+retain their ownership.
+
+Compose configurations remain trusted host input. Their env files, includes and
+build contexts use Compose's normal host access; restricting the initial project
+path and guest bind sources does not sandbox those resource reads.

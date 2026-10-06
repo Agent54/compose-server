@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,6 +36,20 @@ import (
 	"github.com/docker/compose/v5/pkg/mocks"
 	"github.com/docker/compose/v5/server/errdefs"
 )
+
+func TestConfigOwnershipAcceptsCanonicalAliasesButRejectsDifferentFiles(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "compose.yaml")
+	alias := filepath.Join(root, "alias.yaml")
+	other := filepath.Join(root, "other.yaml")
+	assert.NilError(t, os.WriteFile(file, []byte("services: {}"), 0o644))
+	assert.NilError(t, os.WriteFile(other, []byte("services: {}"), 0o644))
+	assert.NilError(t, os.Symlink(file, alias))
+	assert.Assert(t, sameConfigFiles([]string{alias}, []string{file}))
+	assert.Assert(t, !sameConfigFiles([]string{other}, []string{file}))
+	assert.Assert(t, !sameConfigFiles([]string{filepath.Join(root, "missing")}, []string{file}))
+	assert.Assert(t, !sameConfigFiles([]string{alias, other}, []string{file}))
+}
 
 func TestStartUncreatedServiceCreatesAndStartsOnlyOneContainer(t *testing.T) {
 	ctrl := gomock.NewController(t)

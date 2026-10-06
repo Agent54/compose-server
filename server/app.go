@@ -1265,6 +1265,10 @@ func (a *serverApp) pathListHasMultipleRoots(parts []string) bool {
 func (a *serverApp) resolveProjectLoadRef(requestPath string) (projectLoadRef, error) {
 	root := a.config.rootDir
 	if requestPath == "" {
+		if a.config.guestStacksPath != "" {
+			files, err := a.mappedDefaultConfigFiles(root)
+			return projectLoadRef{workingDir: root, configPaths: files}, err
+		}
 		return projectLoadRef{workingDir: root}, nil
 	}
 
@@ -1295,6 +1299,13 @@ func (a *serverApp) resolveProjectLoadRef(requestPath string) (projectLoadRef, e
 
 	info, err := os.Stat(resolved[0])
 	if err == nil && info.IsDir() {
+		if a.config.guestStacksPath != "" {
+			files, err := a.mappedDefaultConfigFiles(resolved[0])
+			if err != nil {
+				return projectLoadRef{}, err
+			}
+			return projectLoadRef{workingDir: resolved[0], configPaths: files}, nil
+		}
 		return projectLoadRef{workingDir: resolved[0]}, nil
 	}
 
@@ -1305,10 +1316,16 @@ func (a *serverApp) resolveProjectLoadRef(requestPath string) (projectLoadRef, e
 }
 
 func (a *serverApp) resolvePathValue(root, requestPath string) (string, error) {
-	if filepath.IsAbs(requestPath) {
-		return filepath.Clean(requestPath), nil
+	candidate := filepath.Clean(requestPath)
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Clean(filepath.Join(root, candidate))
+	} else if a.config.guestStacksPath == "" {
+		// Standalone serve retains its trusted-local absolute-path behavior.
+		return candidate, nil
 	}
-	candidate := filepath.Clean(filepath.Join(root, requestPath))
+	if a.config.guestStacksPath != "" {
+		return resolveMappedProjectPath(root, candidate)
+	}
 	rel, err := filepath.Rel(root, candidate)
 	if err != nil {
 		return "", err
