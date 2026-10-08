@@ -366,6 +366,20 @@ func (a *serverApp) listResourceContainers(ctx context.Context, apiClient mobycl
 	if projectName == "" {
 		return nil, errdefs.InvalidParameter(fmt.Errorf("project is required"))
 	}
+	paths, err := a.resolveContainerPaths(requestPath)
+	if err != nil {
+		return nil, err
+	}
+	containers, err := listProjectContainers(ctx, apiClient, projectName, all, services)
+	if err != nil || len(paths) == 0 {
+		return containers, err
+	}
+	return slices.DeleteFunc(containers, func(ctr containertypes.Summary) bool {
+		return !a.containerMatchesPaths(ctr.Labels, paths)
+	}), nil
+}
+
+func (a *serverApp) resolveContainerPaths(requestPath string) ([]string, error) {
 	paths := splitPathList(requestPath)
 	for i, path := range paths {
 		resolved, err := a.resolvePathValue(a.config.rootDir, path)
@@ -377,21 +391,39 @@ func (a *serverApp) listResourceContainers(ctx context.Context, apiClient mobycl
 			return nil, err
 		}
 	}
-	containers, err := listProjectContainers(ctx, apiClient, projectName, all, services)
-	if err != nil || len(paths) == 0 {
-		return containers, err
+	return paths, nil
+}
+
+func (a *serverApp) containerMatchesPaths(labels map[string]string, paths []string) bool {
+	// Resolve existing prefixes even when the files are gone. On macOS a
+	// recorded /var path and its canonical /private/var path identify one tree.
+	files, err := a.resolveContainerPaths(labels[composeapi.ConfigFilesLabel])
+	if err != nil {
+		return false
 	}
-	return slices.DeleteFunc(containers, func(ctr containertypes.Summary) bool {
-		files := splitPathList(ctr.Labels[composeapi.ConfigFilesLabel])
-		return slices.ContainsFunc(paths, func(path string) bool {
-			if path == filepath.Clean(ctr.Labels[composeapi.WorkingDirLabel]) {
-				return false
-			}
-			return !slices.ContainsFunc(files, func(file string) bool {
-				return path == filepath.Clean(file) || path == filepath.Dir(file)
-			})
-		})
-	}), nil
+	workingDir := ""
+	if labels[composeapi.WorkingDirLabel] != "" {
+		workingDir, _ = a.resolvePathValue(a.config.rootDir, labels[composeapi.WorkingDirLabel])
+	}
+	// Base/override files in one directory must all match. Different roots
+	// represent independent variants of a same-name project and match separately.
+	roots := map[string]bool{}
+	for _, path := range paths {
+		directory := path == workingDir || slices.ContainsFunc(files, func(file string) bool { return path == filepath.Dir(file) })
+		matched := directory || slices.Contains(files, path)
+		root := filepath.Dir(path)
+		if directory {
+			root = path
+		}
+		previous, exists := roots[root]
+		roots[root] = matched && (!exists || previous)
+	}
+	for _, matched := range roots {
+		if matched {
+			return true
+		}
+	}
+	return len(paths) == 0
 }
 
 func listProjectContainers(ctx context.Context, apiClient mobyclient.APIClient, projectName string, all bool, services []string) ([]containertypes.Summary, error) {

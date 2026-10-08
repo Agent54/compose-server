@@ -20,6 +20,7 @@ import (
 	"context"
 	"io"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -80,6 +81,26 @@ func TestResourceSelectionRejectsInvalidPathsWithoutDockerRequests(t *testing.T)
 		app := newServerApp(serveConfig{rootDir: "/missing/compose-root"}, nil, nil)
 		_, err := app.listResourceContainers(t.Context(), client, selection.project, selection.path, true, nil)
 		assert.Assert(t, errdefs.IsInvalidParameter(err))
+	}
+}
+
+func TestContainerPathSelectionMatchesIndependentRootsAndRequiresOverrides(t *testing.T) {
+	root := t.TempDir()
+	app := &serverApp{config: serveConfig{rootDir: root}}
+	labels := map[string]string{composeapi.ConfigFilesLabel: filepath.Join(root, "first", "compose.yaml")}
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{"first/compose.yaml", true},
+		{"first", true},
+		{"other/compose.yaml", false},
+		{"first/compose.yaml,other/compose.yaml", true},
+		{"first/compose.yaml,first/compose.override.yaml", false},
+	} {
+		paths, err := app.resolveContainerPaths(tc.path)
+		assert.NilError(t, err)
+		assert.Equal(t, app.containerMatchesPaths(labels, paths), tc.want, tc.path)
 	}
 }
 

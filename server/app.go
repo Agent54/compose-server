@@ -525,31 +525,7 @@ func (a *serverApp) downProject(ctx context.Context, projectName string, req pro
 }
 
 func (a *serverApp) rmProject(ctx context.Context, projectName string, req rmRequest) (actionResponse, error) {
-	projects, backend, name, err := a.resolveActionProjects(ctx, projectName, req.Path)
-	if err != nil {
-		return actionResponse{}, err
-	}
-	projects, err = filterProjectVariantsByServices(projects, req.Services)
-	if err != nil {
-		return actionResponse{}, err
-	}
-	unlock, err := a.lockProjectMutation(ctx, name)
-	if err != nil {
-		return actionResponse{}, err
-	}
-	defer unlock()
-	for _, project := range projects {
-		services, _ := servicesForProject(project, req.Services)
-		if err := backend.Remove(ctx, name, composeapi.RemoveOptions{
-			Project:  project,
-			Services: services,
-			Force:    req.Force,
-			Stop:     req.Stop,
-		}); err != nil {
-			return actionResponse{}, err
-		}
-	}
-	return a.actionResult(projects[0], name, ""), nil
+	return a.removeProjectContainers(ctx, projectName, req)
 }
 
 func (a *serverApp) pauseProject(ctx context.Context, projectName string, req projectActionRequest) (actionResponse, error) {
@@ -672,6 +648,15 @@ func (a *serverApp) psProject(ctx context.Context, projectName string, path stri
 	if project != nil && (includeAll || len(containers) == 0) {
 		containers = mergeProjectContainers(containers, parsedProjectContainers(project, services))
 	}
+	if project == nil && path != "" {
+		paths, err := a.resolveContainerPaths(path)
+		if err != nil {
+			return nil, err
+		}
+		containers = slices.DeleteFunc(containers, func(ctr composeapi.ContainerSummary) bool {
+			return !a.containerMatchesPaths(ctr.Labels, paths)
+		})
+	}
 	if len(statuses) > 0 {
 		containers = filterByStatus(containers, statuses)
 	}
@@ -782,6 +767,14 @@ func (a *serverApp) resolvePSProject(ctx context.Context, projectName, requestPa
 	if requestPath != "" {
 		projects, name, err := a.resolveProjectVariantsWithBackend(ctx, backend, projectName, requestPath)
 		if err != nil {
+			if projectName != "" && (os.IsNotExist(err) || errdefs.IsNotFound(err)) {
+				// Docker still has the project's containers after its files are
+				// deleted. Keep them visible so they can be stopped or removed.
+				if _, pathErr := a.resolveContainerPaths(requestPath); pathErr != nil {
+					return nil, nil, "", pathErr
+				}
+				return nil, backend, projectName, nil
+			}
 			return nil, nil, "", err
 		}
 		var project *types.Project
