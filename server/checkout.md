@@ -23,29 +23,17 @@ there is no override. Choose a grouping directory outside the existing project.
 The guard checks ancestors within the serve root, rather than files inside the
 cloned repository.
 
-## Private GitHub repositories
+## Private HTTPS repositories
 
-Install Git and GitHub CLI (`gh`) on the host running compose-server. Sign in once
-as the same OS user that runs the server or launcher:
+Checkout uses the normal Git configuration of the OS user running
+compose-server, including system and global credential helpers and inherited
+Git environment settings. Configure that user's Git credentials and confirm
+they can clone the repository with its HTTPS URL before using the API. This
+works for GitHub and other HTTPS hosts without requiring GitHub CLI or a token
+field in the request. Do not include credentials in the URL.
 
-```sh
-gh auth login --hostname github.com --git-protocol https
-```
-
-The selected GitHub account must have read access to the repository, including
-any organization SSO authorization. For headless deployments, GitHub CLI also
-accepts `GH_TOKEN` from the server's environment. Do not include a token in the
-repository URL or API request.
-
-The server uses `gh auth git-credential` only for HTTPS `github.com` requests on
-the default HTTPS port. The helper reads GitHub CLI's saved credentials; the
-server does not save the token in the checkout, URL, or Git configuration. The
-launcher must be able to find `gh` on its `PATH`. `gh auth setup-git` is not needed.
-
-Public repositories still work without GitHub CLI. Other hosts and GitHub
-Enterprise hosts currently support anonymous HTTPS checkout only. SSH URLs and
-URLs containing credentials are rejected.
-
-Terminal and askpass prompts remain disabled. The server still ignores global
-and system Git configuration, including URL rewrites and arbitrary credential
-helpers. Authentication does not require changing the checkout API or UI.
+Terminal prompts are disabled because the API request cannot answer them.
+Configured credential helpers and askpass programs remain available. Git still
+rejects non-HTTPS transports, including URLs rewritten to SSH by Git config.
+The existing HTTPS URL validation and checkout filesystem protections are
+unchanged.

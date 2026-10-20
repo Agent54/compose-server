@@ -519,23 +519,21 @@ func TestRepoCheckoutStaysWithOpenedServeRoot(t *testing.T) {
 	assert.Assert(t, os.IsNotExist(err))
 }
 
-func TestCheckoutGitEnvironmentDisablesAskpass(t *testing.T) {
-	t.Setenv("SSH_ASKPASS", "/tmp/should-not-run")
-	t.Setenv("GIT_ASKPASS", "/tmp/should-not-run")
-	t.Setenv("GIT_CONFIG_COUNT", "1")
-	t.Setenv("GH_DEBUG", "api")
-	t.Setenv("GH_PROMPT_DISABLED", "0")
-	t.Setenv("GH_NO_UPDATE_NOTIFIER", "0")
+func TestCheckoutGitEnvironmentPreservesConfiguration(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", "/configured/gitconfig")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/configured/system-gitconfig")
+	t.Setenv("GIT_ASKPASS", "/configured/askpass")
+	t.Setenv("SSH_ASKPASS", "/configured/ssh-askpass")
+	t.Setenv("GCM_INTERACTIVE", "auto")
+	t.Setenv("GIT_TERMINAL_PROMPT", "1")
 	environment := checkoutGitEnvironment()
-	for _, value := range environment {
-		assert.Assert(t, !strings.HasPrefix(value, "SSH_ASKPASS="), value)
-		assert.Assert(t, !strings.HasPrefix(value, "GIT_CONFIG_COUNT="), value)
-		assert.Assert(t, !strings.HasPrefix(value, "GH_DEBUG="), value)
-	}
-	assert.Assert(t, containsEnvironmentValue(environment, "GIT_ASKPASS="))
+	assert.Assert(t, containsEnvironmentValue(environment, "GIT_CONFIG_GLOBAL=/configured/gitconfig"))
+	assert.Assert(t, containsEnvironmentValue(environment, "GIT_CONFIG_SYSTEM=/configured/system-gitconfig"))
+	assert.Assert(t, containsEnvironmentValue(environment, "GIT_ASKPASS=/configured/askpass"))
+	assert.Assert(t, containsEnvironmentValue(environment, "SSH_ASKPASS=/configured/ssh-askpass"))
+	assert.Assert(t, containsEnvironmentValue(environment, "GCM_INTERACTIVE=auto"))
 	assert.Assert(t, containsEnvironmentValue(environment, "GIT_TERMINAL_PROMPT=0"))
-	assert.Assert(t, containsEnvironmentValue(environment, "GH_PROMPT_DISABLED=1"))
-	assert.Assert(t, containsEnvironmentValue(environment, "GH_NO_UPDATE_NOTIFIER=1"))
+	assert.Assert(t, !containsEnvironmentValue(environment, "GIT_TERMINAL_PROMPT=1"))
 }
 
 func TestComposeDiscoverySkipsCheckoutStage(t *testing.T) {

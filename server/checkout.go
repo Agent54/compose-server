@@ -469,8 +469,7 @@ func cloneGitRepository(ctx context.Context, repositoryURL, destination string, 
 		return fmt.Errorf("git executable is required for repository checkout: %w", err)
 	}
 
-	ghPath, _ := exec.LookPath("gh")
-	cmd := exec.CommandContext(ctx, gitPath, checkoutGitArguments(repositoryURL, destination, depth, ghPath)...)
+	cmd := exec.CommandContext(ctx, gitPath, checkoutGitArguments(repositoryURL, destination, depth)...)
 	cmd.Env = checkoutGitEnvironment()
 	cmd.WaitDelay = 5 * time.Second
 	output := &limitedBuffer{limit: maxGitOutputBytes}
@@ -481,10 +480,9 @@ func cloneGitRepository(ctx context.Context, repositoryURL, destination string, 
 			return fmt.Errorf("git clone canceled or timed out: %w", ctx.Err())
 		}
 		if details := strings.TrimSpace(output.String()); details != "" {
-			if isGitHubCheckout(repositoryURL) && (strings.Contains(details, "could not read Username") ||
-				strings.Contains(details, "could not read Password") || strings.Contains(details, "Authentication failed") || strings.Contains(details, "Repository not found")) {
-				details += "\nFor private GitHub repositories, install GitHub CLI and run 'gh auth login --hostname github.com --git-protocol https' as the user running compose-server. " +
-					"The account must have access to the repository."
+			if strings.Contains(details, "could not read Username") ||
+				strings.Contains(details, "could not read Password") || strings.Contains(details, "Authentication failed") || strings.Contains(details, "Repository not found") {
+				details += "\nFor private repositories, configure Git credentials for the user running compose-server and verify repository access."
 			}
 			return fmt.Errorf("git clone failed: %w: %s", err, details)
 		}
@@ -493,52 +491,24 @@ func cloneGitRepository(ctx context.Context, repositoryURL, destination string, 
 	return nil
 }
 
-func checkoutGitArguments(repositoryURL, destination string, depth int, ghPath string) []string {
-	args := []string{
-		"-c", "credential.helper=",
+func checkoutGitArguments(repositoryURL, destination string, depth int) []string {
+	return []string{
 		"-c", "protocol.allow=never",
 		"-c", "protocol.https.allow=always",
+		"clone", "--depth=" + strconv.Itoa(depth), "--", repositoryURL, destination,
 	}
-	if ghPath != "" && isGitHubCheckout(repositoryURL) {
-		// gh looks up credentials by host string, so normalize casing and the
-		// explicit default port before Git passes the host to the helper.
-		parsed, _ := url.Parse(repositoryURL)
-		parsed.Host = "github.com"
-		repositoryURL = parsed.String()
-		// Git executes credential helpers with a shell. Quote the resolved binary
-		// path, never interpolate request data, and scope the helper to GitHub.
-		// Command-line configuration is not saved in the cloned repository.
-		helper := "!'" + strings.ReplaceAll(filepath.ToSlash(ghPath), "'", "'\\''") + "' auth git-credential"
-		args = append(args, "-c", "credential.https://github.com.helper="+helper)
-	}
-	return append(args, "clone", "--depth="+strconv.Itoa(depth), "--", repositoryURL, destination)
-}
-
-func isGitHubCheckout(repositoryURL string) bool {
-	parsed, err := url.Parse(repositoryURL)
-	return err == nil && parsed.Scheme == "https" && parsed.User == nil && strings.EqualFold(parsed.Hostname(), "github.com") &&
-		(parsed.Port() == "" || parsed.Port() == "443")
 }
 
 func checkoutGitEnvironment() []string {
-	environment := make([]string, 0, len(os.Environ())+7)
+	environment := make([]string, 0, len(os.Environ())+1)
 	for _, value := range os.Environ() {
 		key, _, _ := strings.Cut(value, "=")
-		if strings.HasPrefix(strings.ToUpper(key), "GIT_") || strings.EqualFold(key, "GCM_INTERACTIVE") || strings.EqualFold(key, "SSH_ASKPASS") ||
-			strings.EqualFold(key, "GH_DEBUG") || strings.EqualFold(key, "GH_PROMPT_DISABLED") || strings.EqualFold(key, "GH_NO_UPDATE_NOTIFIER") {
+		if strings.EqualFold(key, "GIT_TERMINAL_PROMPT") {
 			continue
 		}
 		environment = append(environment, value)
 	}
-	return append(environment,
-		"GIT_CONFIG_GLOBAL="+os.DevNull,
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_ASKPASS=",
-		"GCM_INTERACTIVE=Never",
-		"GH_PROMPT_DISABLED=1",
-		"GH_NO_UPDATE_NOTIFIER=1",
-	)
+	return append(environment, "GIT_TERMINAL_PROMPT=0")
 }
 
 type limitedBuffer struct {
