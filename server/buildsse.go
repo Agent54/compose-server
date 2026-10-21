@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,7 @@ type buildRegistry struct {
 type buildRecord struct {
 	id          string
 	project     string
+	services    []string
 	startedAt   time.Time
 	finishedAt  *time.Time
 	status      string
@@ -51,6 +53,7 @@ type buildRecord struct {
 type buildSummary struct {
 	ID         string     `json:"id"`
 	Project    string     `json:"project"`
+	Services   []string   `json:"services,omitempty"`
 	Status     string     `json:"status"`
 	StartedAt  time.Time  `json:"startedAt"`
 	FinishedAt *time.Time `json:"finishedAt,omitempty"`
@@ -78,16 +81,19 @@ func newBuildRegistry() *buildRegistry {
 	return &buildRegistry{builds: map[string]*buildRecord{}}
 }
 
-func (r *buildRegistry) start(project string) string {
+func (r *buildRegistry) start(project string, services ...string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.nextID++
 	buildID := strconv.FormatUint(r.nextID, 36)
+	services = slices.Clone(services)
+	slices.Sort(services)
 	now := time.Now().UTC()
 	r.builds[buildID] = &buildRecord{
 		id:          buildID,
 		project:     project,
+		services:    slices.Compact(services),
 		startedAt:   now,
 		status:      "running",
 		subscribers: map[int]chan sseMessage{},
@@ -179,6 +185,7 @@ func (r *buildRegistry) list() []buildSummary {
 		out = append(out, buildSummary{
 			ID:         record.id,
 			Project:    record.project,
+			Services:   slices.Clone(record.services),
 			Status:     record.status,
 			StartedAt:  record.startedAt,
 			FinishedAt: record.finishedAt,

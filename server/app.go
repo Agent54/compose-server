@@ -226,7 +226,11 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 	}
 	defer unlock()
 	if req.Build {
-		buildID = a.builds.start(projectName)
+		var buildServices []string
+		for _, project := range projects {
+			buildServices = append(buildServices, serviceSelection(project, req.Services)...)
+		}
+		buildID = a.builds.start(projectName, buildServices...)
 		backend, err = a.instrumentedBuildBackend(buildID, projectName)
 		if err != nil {
 			a.builds.finish(buildID, false)
@@ -275,6 +279,9 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 		}
 	}
 	if buildID != "" {
+		if upErr != nil {
+			_, _ = fmt.Fprintf(a.builds.writer(buildID, projectName, "stderr"), "%v\n", upErr)
+		}
 		a.builds.finish(buildID, upErr == nil)
 	}
 	if upErr != nil {

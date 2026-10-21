@@ -42,7 +42,7 @@ func (a *serverApp) startServiceContainer(ctx context.Context, projectName strin
 		return actionResponse{}, err
 	}
 	defer unlock()
-	buildID := a.builds.start(projectName)
+	buildID := a.builds.start(projectName, req.Service)
 	defer func() {
 		if startErr != nil {
 			_, _ = fmt.Fprintf(a.builds.writer(buildID, projectName, "stderr"), "%v\n", startErr)
