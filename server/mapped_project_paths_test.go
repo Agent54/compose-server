@@ -32,11 +32,14 @@ func TestMappedProjectPathsStayInsideStacks(t *testing.T) {
 	assert.NilError(t, os.MkdirAll(outside, 0o755))
 	assert.NilError(t, os.WriteFile(filepath.Join(outside, "compose.yaml"), []byte("services: {}"), 0o644))
 	assert.NilError(t, os.Symlink(outside, filepath.Join(root, "escape")))
-	a := &serverApp{config: serveConfig{rootDir: root, guestStacksPath: "/stacks"}}
-	for _, path := range []string{filepath.Join(outside, "compose.yaml"), "../outside/compose.yaml", "escape/compose.yaml", "escape/missing/compose.yaml"} {
-		_, err := a.resolvePathValue(root, path)
-		assert.Assert(t, err != nil, path)
+	for _, guest := range []string{"", "/stacks"} {
+		a := &serverApp{config: serveConfig{rootDir: root, guestStacksPath: guest}}
+		for _, path := range []string{filepath.Join(outside, "compose.yaml"), "../outside/compose.yaml", "escape/compose.yaml", "escape/missing/compose.yaml"} {
+			_, err := a.resolvePathValue(root, path)
+			assert.Assert(t, err != nil, path)
+		}
 	}
+	a := &serverApp{config: serveConfig{rootDir: root, guestStacksPath: "/stacks"}}
 	assert.NilError(t, os.MkdirAll(filepath.Join(root, "demo"), 0o755))
 	assert.NilError(t, os.Symlink("demo", filepath.Join(root, "alias")))
 	resolved, err := a.resolvePathValue(root, "alias/missing/compose.yaml")

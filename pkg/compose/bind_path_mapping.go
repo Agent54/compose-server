@@ -53,8 +53,7 @@ func (m *bindPathMapping) guestSource(source string) (string, error) {
 	}
 	source = filepath.Clean(source)
 	// Docker control/storage and timezone files are supplied by the Linux guest.
-	if source == "/etc/localtime" || source == "/etc/timezone" || source == "/var/run/docker.sock" || source == "/run/docker.sock" ||
-		source == "/var/lib/docker" || strings.HasPrefix(source, "/var/lib/docker/") {
+	if guestBindSource(source) {
 		return source, nil
 	}
 	resolved, err := resolveBindSource(source)
@@ -68,10 +67,15 @@ func (m *bindPathMapping) guestSource(source string) (string, error) {
 	return filepath.Join(m.guestRoot, relative), nil
 }
 
+func guestBindSource(source string) bool {
+	return source == "/etc/localtime" || source == "/etc/timezone" || source == "/var/run/docker.sock" || source == "/run/docker.sock" ||
+		source == "/var/lib/docker" || strings.HasPrefix(source, "/var/lib/docker/")
+}
+
 // Resolve the existing prefix so a not-yet-created bind path cannot escape
 // through a symlink in one of its parent directories.
 func resolveBindSource(source string) (string, error) {
-	path := filepath.Clean(source)
+	path := source
 	var missing []string
 	for {
 		_, err := os.Lstat(path)
@@ -88,11 +92,17 @@ func resolveBindSource(source string) (string, error) {
 		if !os.IsNotExist(err) {
 			return "", err
 		}
-		parent := filepath.Dir(path)
+		// Keep .. until symlinks in its preceding components have been
+		// resolved. Cleaning first can hide an escaping symlink/../file.
+		parent, leaf := filepath.Split(strings.TrimRight(path, string(filepath.Separator)))
+		parent = strings.TrimRight(parent, string(filepath.Separator))
+		if parent == filepath.VolumeName(path) && filepath.IsAbs(path) {
+			parent += string(filepath.Separator)
+		}
 		if parent == path {
 			return "", err
 		}
-		missing = append(missing, filepath.Base(path))
+		missing = append(missing, leaf)
 		path = parent
 	}
 }

@@ -4,6 +4,7 @@
     + [Windows and macOS](#windows-and-macos)
     + [Linux](#linux)
 - [Quick Start](#quick-start)
+- [Compose server file access](#compose-server-file-access)
 - [Contributing](#contributing)
 - [Legacy](#legacy)
 
@@ -76,6 +77,36 @@ services:
   redis:
     image: redis
 ```
+
+Compose server file access
+--------------------------
+
+`docker compose serve DIR` restricts project file references to the selected
+stacks directory, including symlink targets. This applies to Compose files,
+recursive `include` and `extends.file` references, project and service env files,
+label files, local build contexts and additional contexts, Dockerfiles and ignore
+files, local build caches, build SSH keys, file-backed configs and secrets,
+seccomp profiles, and watch sources. Dockerfiles may be outside their build
+context if they remain inside stacks. External symlinks in build and watch trees
+are rejected even when an ignore file excludes them. Default configuration lookup
+does not search parent directories. Remote Compose includes, Git/URL build
+contexts, and host service providers are unavailable through the server. Check
+out remote build contexts inside stacks before building. Image and service
+contexts remain supported.
+
+Interpolation inherits the Compose server process's environment. Process values
+take precedence over project env files. File paths selected through environment
+variables remain subject to the stacks-folder checks. Ambient SSH agents are
+unavailable; select a key inside stacks explicitly. Guest Docker socket/storage
+and timezone bind sources retain their existing mount exceptions; these
+exceptions do not permit host file reads.
+
+These checks validate configuration inputs; they are not an operating-system
+filesystem sandbox. Docker's own configuration and credentials still use normal
+host access. Prevent concurrent untrusted changes to files or symlinks while
+Compose and its builders consume a stack; an OS sandbox is needed to enforce
+the boundary against filesystem races. The ordinary Compose CLI retains its
+standard file access behavior.
 
 Contributing
 ------------

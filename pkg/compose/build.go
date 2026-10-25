@@ -49,6 +49,17 @@ func (s *composeService) Build(ctx context.Context, project *types.Project, opti
 }
 
 func (s *composeService) build(ctx context.Context, project *types.Project, options api.BuildOptions, localImages map[string]api.ImageSummary) (map[string]string, error) {
+	if err := s.fileAccess.checkProject(project); err != nil {
+		return nil, err
+	}
+	if s.fileAccess != nil {
+		if err := s.fileAccess.checkSSH(project.WorkingDir, options.SSHs); err != nil {
+			return nil, err
+		}
+		if err := s.fileAccess.checkBuildContexts(project); err != nil {
+			return nil, err
+		}
+	}
 	imageIDs := map[string]string{}
 	serviceToBuild := types.Services{}
 

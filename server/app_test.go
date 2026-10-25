@@ -65,20 +65,25 @@ func TestWatchModeUpOptionsIncludesBuildWhenEnabled(t *testing.T) {
 	project := &types.Project{
 		Name: "demo",
 		Services: types.Services{
-			"web": {Name: "web"},
+			"web": {Name: "web", Build: &types.BuildConfig{Context: "."}},
+			"db":  {Name: "db", Image: "postgres", PullPolicy: types.PullPolicyAlways},
 		},
 	}
 	build := composeapi.BuildOptions{Services: []string{"web"}}
+
+	withoutBuild := watchModeUpOptions(project, build, nil, []string{"web"}, false, false)
+	assert.Assert(t, withoutBuild.Create.Build == nil)
+	assert.Equal(t, withoutBuild.Start.Watch, true)
+	assert.Equal(t, project.Services["web"].PullPolicy, "")
+	assert.Equal(t, project.Services["db"].PullPolicy, types.PullPolicyAlways)
 
 	withBuild := watchModeUpOptions(project, build, nil, []string{"web"}, true, true)
 	assert.Assert(t, withBuild.Create.Build != nil)
 	assert.DeepEqual(t, withBuild.Create.Build.Services, []string{"web"})
 	assert.Equal(t, withBuild.Create.RemoveOrphans, true)
 	assert.Equal(t, withBuild.Start.Watch, true)
-
-	withoutBuild := watchModeUpOptions(project, build, nil, []string{"web"}, false, false)
-	assert.Assert(t, withoutBuild.Create.Build == nil)
-	assert.Equal(t, withoutBuild.Start.Watch, true)
+	assert.Equal(t, project.Services["web"].PullPolicy, types.PullPolicyBuild)
+	assert.Equal(t, project.Services["db"].PullPolicy, types.PullPolicyAlways)
 }
 
 func TestAnalogUpCommandIncludesWatchBuildAndRemoveOrphans(t *testing.T) {

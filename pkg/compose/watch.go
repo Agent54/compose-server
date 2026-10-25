@@ -193,6 +193,9 @@ func (r watchRule) Matches(event watch.FileEvent) *sync.PathMapping {
 }
 
 func (s *composeService) watch(ctx context.Context, project *types.Project, options api.WatchOptions) (func() error, error) {
+	if err := s.fileAccess.checkProject(project); err != nil {
+		return nil, err
+	}
 	var err error
 	if project, err = project.WithSelectedServices(options.Services); err != nil {
 		return nil, err
@@ -300,6 +303,9 @@ func prepareRebuildTriggers(project *types.Project, serviceName string, service 
 func (s *composeService) watchTriggerPaths(ctx context.Context, service types.ServiceConfig, config *types.DevelopConfig, syncer sync.Syncer) ([]string, error) {
 	var paths []string
 	for _, trigger := range config.Watch {
+		if err := s.fileAccess.checkTree("", trigger.Path); err != nil {
+			return nil, err
+		}
 		if isSync(trigger) && checkIfPathAlreadyBindMounted(trigger.Path, service.Volumes) {
 			logrus.Warnf("path '%s' also declared by a bind mount volume, this path won't be monitored!\n", trigger.Path)
 			continue
@@ -581,6 +587,9 @@ func (s *composeService) handleWatchBatch(ctx context.Context, project *types.Pr
 			mapping := rule.Matches(event)
 			if mapping == nil {
 				continue
+			}
+			if err := s.fileAccess.checkTree(project.WorkingDir, mapping.HostPath); err != nil {
+				return err
 			}
 			options.LogTo.Log(api.WatchLogger, fmt.Sprintf("compose-server-watch-debug match service=%q action=%q event=%q rule=%q target=%q", rule.service, rule.Action, event, rule.Path, rule.Target))
 

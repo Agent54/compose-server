@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	composecli "github.com/compose-spec/compose-go/v2/cli"
 
@@ -30,10 +29,22 @@ import (
 // Resolve existing prefixes before returning a host path to the loader. The
 // launcher maps only the selected stacks tree into its Docker VM.
 func resolveMappedProjectPath(root, candidate string) (string, error) {
-	resolvedRoot, err := filepath.EvalSymlinks(root)
+	resolvedRoot, err := resolveExistingProjectPath(root)
 	if err != nil {
 		return "", err
 	}
+	current, err := resolveExistingProjectPath(candidate)
+	if err != nil {
+		return "", err
+	}
+	relative, err := filepath.Rel(resolvedRoot, current)
+	if err != nil || !filepath.IsLocal(relative) {
+		return "", errdefs.InvalidParameter(fmt.Errorf("project path is outside the stacks folder: %s", candidate))
+	}
+	return current, nil
+}
+
+func resolveExistingProjectPath(candidate string) (string, error) {
 	current := candidate
 	var missing []string
 	for {
@@ -53,10 +64,6 @@ func resolveMappedProjectPath(root, candidate string) (string, error) {
 	}
 	for i := len(missing) - 1; i >= 0; i-- {
 		current = filepath.Join(current, missing[i])
-	}
-	relative, err := filepath.Rel(resolvedRoot, current)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", errdefs.InvalidParameter(fmt.Errorf("project path is outside the stacks folder: %s", candidate))
 	}
 	return current, nil
 }

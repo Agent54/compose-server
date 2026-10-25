@@ -180,6 +180,10 @@ func (s *composeService) doBuildBake(ctx context.Context, project *types.Project
 		return s.dryRunBake(bake.cfg), nil
 	}
 	cmd := exec.CommandContext(ctx, buildx.Path, args...)
+	if s.fileAccess != nil {
+		// Local cache and SSH paths use the same base as policy validation.
+		cmd.Dir = project.WorkingDir
+	}
 
 	err = s.prepareShellOut(ctx, types.NewMapping(os.Environ()), cmd)
 	if err != nil {

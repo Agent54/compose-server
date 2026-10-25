@@ -85,6 +85,7 @@ func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.C
 			if err := prepareServeEnvironment(&cfg); err != nil {
 				return err
 			}
+			backendOpts = append(slices.Clone(backendOpts), composepkg.WithFileAccessRoot(cfg.rootDir))
 			if cfg.guestStacksPath != "" {
 				backendOpts = append(slices.Clone(backendOpts), composepkg.WithBindPathMapping(cfg.rootDir, cfg.guestStacksPath))
 			}

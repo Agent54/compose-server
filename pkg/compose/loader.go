@@ -41,6 +41,11 @@ func (s *composeService) LoadProject(ctx context.Context, options api.ProjectLoa
 	if err != nil {
 		return nil, err
 	}
+	if s.fileAccess != nil {
+		if err := s.fileAccess.checkComposeFiles(ctx, projectOptions); err != nil {
+			return nil, err
+		}
+	}
 
 	// Register all user-provided listeners (e.g., for metrics collection)
 	for _, listener := range options.LoadListeners {
@@ -56,6 +61,19 @@ func (s *composeService) LoadProject(ctx context.Context, options api.ProjectLoa
 	project, err := projectOptions.LoadProject(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if err := s.fileAccess.checkProject(project); err != nil {
+		return nil, err
+	}
+	if s.fileAccess != nil {
+		project, err = project.WithServicesLabelsResolved(true)
+		if err != nil {
+			return nil, err
+		}
+		project, err = project.WithServicesEnvironmentResolved(true)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Post-processing: service selection, environment resolution, etc.
@@ -79,6 +97,9 @@ func (s *composeService) createRemoteLoaders(options api.ProjectLoadOptions) []l
 
 // buildProjectOptions constructs compose-go ProjectOptions from API options
 func (s *composeService) buildProjectOptions(options api.ProjectLoadOptions, remoteLoaders []loader.ResourceLoader) (*cli.ProjectOptions, error) {
+	if s.fileAccess != nil {
+		return s.fileAccess.projectOptions(options)
+	}
 	projectOptionsFns := []cli.ProjectOptionsFn{
 		cli.WithWorkingDirectory(options.WorkingDir),
 		cli.WithOsEnv,

@@ -200,6 +200,7 @@ func WithEventProcessor(bus api.EventProcessor) Option {
 type composeService struct {
 	dockerCli       command.Cli
 	bindPathMapping *bindPathMapping
+	fileAccess      *fileAccessPolicy
 	// prompt is used to interact with user and confirm actions
 	prompt Prompt
 	// eventBus collects tasks execution events

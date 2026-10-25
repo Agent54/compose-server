@@ -256,6 +256,7 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 		}
 		var buildPtr *composeapi.BuildOptions
 		if req.Build {
+			prepareProjectForBuild(project)
 			build := a.newBuildOptionsForServices(project, services)
 			buildPtr = &build
 		}
@@ -1319,21 +1320,25 @@ func (a *serverApp) resolvePathValue(root, requestPath string) (string, error) {
 	candidate := filepath.Clean(requestPath)
 	if !filepath.IsAbs(candidate) {
 		candidate = filepath.Clean(filepath.Join(root, candidate))
-	} else if a.config.guestStacksPath == "" {
-		// Standalone serve retains its trusted-local absolute-path behavior.
-		return candidate, nil
 	}
-	if a.config.guestStacksPath != "" {
-		return resolveMappedProjectPath(root, candidate)
-	}
-	rel, err := filepath.Rel(root, candidate)
+	resolved, err := resolveMappedProjectPath(root, candidate)
 	if err != nil {
 		return "", err
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", errdefs.InvalidParameter(fmt.Errorf("path escapes serve root: %s", requestPath))
+	if a.config.guestStacksPath != "" {
+		return resolved, nil
 	}
 	return candidate, nil
+}
+
+// Match the CLI's --build policy: an existing local image must not skip the build.
+func prepareProjectForBuild(project *types.Project) {
+	for name, service := range project.Services {
+		if service.Build != nil {
+			service.PullPolicy = types.PullPolicyBuild
+			project.Services[name] = service
+		}
+	}
 }
 
 func (a *serverApp) newBuildOptionsForServices(project *types.Project, services []string) composeapi.BuildOptions {
@@ -1400,6 +1405,7 @@ func watchModeUpOptions(project *types.Project, build composeapi.BuildOptions, c
 	selectedServices := serviceSelection(project, services)
 	var buildPtr *composeapi.BuildOptions
 	if buildEnabled {
+		prepareProjectForBuild(project)
 		buildCopy := build
 		buildPtr = &buildCopy
 	}

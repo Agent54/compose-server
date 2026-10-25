@@ -148,5 +148,5 @@ func TestResolveProjectLoadRefRejectsRelativeEscape(t *testing.T) {
 	app := newServerApp(serveConfig{rootDir: root}, nil, nil)
 
 	_, err := app.resolveProjectLoadRef("../outside")
-	assert.ErrorContains(t, err, "path escapes serve root")
+	assert.ErrorContains(t, err, "outside the stacks folder")
 }
