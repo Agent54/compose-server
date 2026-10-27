@@ -94,7 +94,7 @@ type bakeTarget struct {
 	CacheFrom        []string          `json:"cache-from,omitempty"`
 	CacheTo          []string          `json:"cache-to,omitempty"`
 	Target           string            `json:"target,omitempty"`
-	Secrets          []string          `json:"secret,omitempty"`
+	Secrets          []bakeSecret      `json:"secret,omitempty"`
 	SSH              []string          `json:"ssh,omitempty"`
 	Platforms        []string          `json:"platforms,omitempty"`
 	Pull             bool              `json:"pull,omitempty"`
@@ -108,6 +108,12 @@ type bakeTarget struct {
 	ExtraHosts       map[string]string `json:"extra-hosts,omitempty"`
 	Outputs          []string          `json:"output,omitempty"`
 	Attest           []string          `json:"attest,omitempty"`
+}
+
+type bakeSecret struct {
+	ID       string `json:"id"`
+	FilePath string `json:"src,omitempty"`
+	Env      string `json:"env,omitempty"`
 }
 
 type bakeMetadata map[string]buildStatus
@@ -151,7 +157,7 @@ func (s *composeService) doBuildBake(ctx context.Context, project *types.Project
 
 	bake := s.prepareBakeBuild(project, serviceToBeBuild, options)
 
-	cfgJSON, err := json.MarshalIndent(bake.cfg, "", "  ")
+	cfgJSON, err := marshalBakeConfig(bake.cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -250,9 +256,6 @@ func (s *composeService) prepareBakeBuild(project *types.Project, serviceToBeBui
 		buildConfig := *service.Build
 
 		args := resolveAndMergeBuildArgs(s.getProxyConfig(), project, service, options).ToMapping()
-		for k, v := range args {
-			args[k] = strings.ReplaceAll(v, "${", "$${")
-		}
 
 		entitlements, privileged := bakeEntitlements(buildConfig)
 		bake.privileged = bake.privileged || privileged
@@ -272,7 +275,7 @@ func (s *composeService) prepareBakeBuild(project *types.Project, serviceToBeBui
 			Context:          buildConfig.Context,
 			Contexts:         additionalContexts(buildConfig.AdditionalContexts, bake.targetNames),
 			Dockerfile:       dockerFilePath(buildConfig.Context, buildConfig.Dockerfile),
-			DockerfileInline: strings.ReplaceAll(buildConfig.DockerfileInline, "${", "$${"),
+			DockerfileInline: buildConfig.DockerfileInline,
 			Args:             args,
 			Labels:           getImageBuildLabels(project, service),
 			Tags:             append(buildConfig.Tags, image),
@@ -309,6 +312,45 @@ func (s *composeService) prepareBakeBuild(project *types.Project, serviceToBeBui
 	bake.cfg.Groups["default"] = group
 
 	return bake
+}
+
+// Bake reads JSON strings as HCL templates. Escape every string, including map
+// keys, at the serialization boundary so neither interpolation nor directives can
+// reinterpret Compose's resolved paths, arguments, labels, or other settings.
+func marshalBakeConfig(config bakeConfig) ([]byte, error) {
+	data, err := json.Marshal(config)
+	if err != nil {
+		return nil, err
+	}
+	var document any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&document); err != nil {
+		return nil, err
+	}
+	return json.MarshalIndent(escapeBakeTemplates(document), "", "  ")
+}
+
+func escapeBakeTemplates(value any) any {
+	switch value := value.(type) {
+	case string:
+		return escapeBakeString(value)
+	case map[string]any:
+		escaped := make(map[string]any, len(value))
+		for key, item := range value {
+			escaped[escapeBakeString(key)] = escapeBakeTemplates(item)
+		}
+		return escaped
+	case []any:
+		for index, item := range value {
+			value[index] = escapeBakeTemplates(item)
+		}
+	}
+	return value
+}
+
+func escapeBakeString(value string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(value, "${", "$${"), "%{", "%%{")
 }
 
 // bakeTargetNames produces a unique ID for each service, used as bake target.
@@ -582,8 +624,8 @@ func toBakeSSH(ssh types.SSHConfig) []string {
 	return s
 }
 
-func toBakeSecrets(project *types.Project, secrets []types.ServiceSecretConfig) ([]string, []string) {
-	var s []string
+func toBakeSecrets(project *types.Project, secrets []types.ServiceSecretConfig) ([]bakeSecret, []string) {
+	var s []bakeSecret
 	var env []string
 	for _, ref := range secrets {
 		def := project.Secrets[ref.Source]
@@ -593,10 +635,13 @@ func toBakeSecrets(project *types.Project, secrets []types.ServiceSecretConfig) 
 		}
 		switch {
 		case def.Environment != "":
-			env = append(env, fmt.Sprintf("%s=%s", def.Environment, project.Environment[def.Environment]))
-			s = append(s, fmt.Sprintf("id=%s,type=env,env=%s", target, def.Environment))
+			// A project may name a Buildx or process-control variable as its
+			// secret source. Export only a private name to the subprocess.
+			name := "COMPOSE_BAKE_SECRET_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+			env = append(env, fmt.Sprintf("%s=%s", name, project.Environment[def.Environment]))
+			s = append(s, bakeSecret{ID: target, Env: name})
 		case def.File != "":
-			s = append(s, fmt.Sprintf("id=%s,type=file,src=%s", target, def.File))
+			s = append(s, bakeSecret{ID: target, FilePath: def.File})
 		}
 	}
 	return s, env

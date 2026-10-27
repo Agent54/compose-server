@@ -34,6 +34,16 @@ import (
 	"github.com/docker/compose/v5/pkg/api"
 )
 
+type composeServiceRef struct {
+	file    string
+	service string
+}
+
+type composeFileVisits struct {
+	includes map[string]bool
+	extends  map[composeServiceRef]bool
+}
+
 func (p *fileAccessPolicy) projectOptions(options api.ProjectLoadOptions) (*cli.ProjectOptions, error) {
 	workingDir := options.WorkingDir
 	if workingDir == "" {
@@ -151,14 +161,15 @@ func (p *fileAccessPolicy) checkComposeFiles(ctx context.Context, o *cli.Project
 		return err
 	}
 	for _, file := range o.ConfigPaths {
-		if err := p.checkComposeFile(ctx, file, base, base, o.Environment.Clone(), map[string]bool{}); err != nil {
+		visiting := &composeFileVisits{includes: map[string]bool{}, extends: map[composeServiceRef]bool{}}
+		if err := p.checkComposeFile(ctx, file, base, base, "", o.Environment.Clone(), visiting); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (p *fileAccessPolicy) checkComposeFile(ctx context.Context, file, base, resourceDir string, env types.Mapping, visiting map[string]bool) error {
+func (p *fileAccessPolicy) checkComposeFile(ctx context.Context, file, base, resourceDir, service string, env types.Mapping, visiting *composeFileVisits) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -166,11 +177,13 @@ func (p *fileAccessPolicy) checkComposeFile(ctx context.Context, file, base, res
 	if err != nil {
 		return err
 	}
-	if visiting[resolved] {
-		return fmt.Errorf("cyclic Compose file reference: %s", file)
+	if service == "" {
+		if visiting.includes[resolved] {
+			return fmt.Errorf("cyclic Compose include reference: %s", file)
+		}
+		visiting.includes[resolved] = true
+		defer delete(visiting.includes, resolved)
 	}
-	visiting[resolved] = true
-	defer delete(visiting, resolved)
 	content, err := os.ReadFile(resolved)
 	if err != nil {
 		return err
@@ -183,13 +196,15 @@ func (p *fileAccessPolicy) checkComposeFile(ctx context.Context, file, base, res
 		} else if err != nil {
 			return err
 		}
-		if err := p.checkComposeDocument(ctx, file, base, resourceDir, raw, env.Clone(), visiting); err != nil {
+		if err := p.checkComposeDocument(ctx, file, base, resourceDir, service, raw, env.Clone(), visiting); err != nil {
 			return fmt.Errorf("%s: %w", file, err)
 		}
 	}
 }
 
-func (p *fileAccessPolicy) checkComposeDocument(ctx context.Context, file, base, resourceDir string, raw map[string]any, env types.Mapping, visiting map[string]bool) error {
+func (p *fileAccessPolicy) checkComposeDocument(ctx context.Context, file, base, resourceDir, selectedService string,
+	raw map[string]any, env types.Mapping, visiting *composeFileVisits,
+) error {
 	model, err := loader.LoadModelWithContext(ctx, types.ConfigDetails{
 		WorkingDir: base, Environment: env,
 		ConfigFiles: []types.ConfigFile{{Filename: file, Config: raw}},
@@ -212,31 +227,56 @@ func (p *fileAccessPolicy) checkComposeDocument(ctx context.Context, file, base,
 	if err := loader.Transform(model, &references); err != nil {
 		return err
 	}
-	for _, include := range references.Include {
-		if err := p.checkInclude(ctx, base, resourceDir, include, env, visiting); err != nil {
-			return err
+	// compose-go skips includes in files loaded solely as extends bases.
+	if selectedService == "" {
+		for _, include := range references.Include {
+			if err := p.checkInclude(ctx, base, resourceDir, include, env, visiting); err != nil {
+				return err
+			}
 		}
 	}
-	for _, service := range references.Services {
-		if service.Extends == nil || service.Extends.File == "" {
+	for name, service := range references.Services {
+		if selectedService != "" && name != selectedService {
 			continue
 		}
-		extended := localComposeReference(resourceDir, service.Extends.File)
-		if _, err := p.path(resourceDir, extended); err != nil {
-			return err
-		}
-		relative, err := filepath.Rel(resourceDir, filepath.Dir(extended))
-		if err != nil {
-			return err
-		}
-		if err := p.checkComposeFile(ctx, extended, relative, filepath.Dir(extended), env, visiting); err != nil {
+		if err := p.checkServiceExtends(ctx, file, base, resourceDir, name, service.Extends, env, visiting); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (p *fileAccessPolicy) checkInclude(ctx context.Context, base, resourceDir string, include types.IncludeConfig, env types.Mapping, visiting map[string]bool) error {
+func (p *fileAccessPolicy) checkServiceExtends(ctx context.Context, file, base, resourceDir, name string,
+	extends *types.ExtendsConfig, env types.Mapping, visiting *composeFileVisits,
+) error {
+	if extends == nil {
+		return nil
+	}
+	resolved, err := p.path(resourceDir, file)
+	if err != nil {
+		return err
+	}
+	ref := composeServiceRef{file: resolved, service: name}
+	if visiting.extends[ref] {
+		return fmt.Errorf("cyclic Compose extends reference: %s service %s", file, name)
+	}
+	visiting.extends[ref] = true
+	defer delete(visiting.extends, ref)
+	if extends.File == "" {
+		return p.checkComposeFile(ctx, file, base, resourceDir, extends.Service, env, visiting)
+	}
+	extended := localComposeReference(resourceDir, extends.File)
+	if _, err := p.path(resourceDir, extended); err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(resourceDir, filepath.Dir(extended))
+	if err != nil {
+		return err
+	}
+	return p.checkComposeFile(ctx, extended, relative, filepath.Dir(extended), extends.Service, env, visiting)
+}
+
+func (p *fileAccessPolicy) checkInclude(ctx context.Context, base, resourceDir string, include types.IncludeConfig, env types.Mapping, visiting *composeFileVisits) error {
 	if len(include.Path) == 0 {
 		return fmt.Errorf("include requires a path inside the stacks folder")
 	}
@@ -293,7 +333,7 @@ func (p *fileAccessPolicy) checkInclude(ctx context.Context, base, resourceDir s
 		return err
 	}
 	for _, file := range files {
-		if err := p.checkComposeFile(ctx, file, relative, directory, env.Clone().Merge(values), visiting); err != nil {
+		if err := p.checkComposeFile(ctx, file, relative, directory, "", env.Clone().Merge(values), visiting); err != nil {
 			return err
 		}
 	}

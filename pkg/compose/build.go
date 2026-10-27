@@ -56,9 +56,6 @@ func (s *composeService) build(ctx context.Context, project *types.Project, opti
 		if err := s.fileAccess.checkSSH(project.WorkingDir, options.SSHs); err != nil {
 			return nil, err
 		}
-		if err := s.fileAccess.checkBuildContexts(project); err != nil {
-			return nil, err
-		}
 	}
 	imageIDs := map[string]string{}
 	serviceToBuild := types.Services{}
@@ -84,6 +81,11 @@ func (s *composeService) build(ctx context.Context, project *types.Project, opti
 
 	project, err = project.WithSelectedServices(options.Services)
 	if err != nil {
+		return nil, err
+	}
+	// Additional service contexts can enable profiled build dependencies. Scan
+	// the resulting service set before either builder can consume their trees.
+	if err := s.fileAccess.checkBuildContexts(project); err != nil {
 		return nil, err
 	}
 

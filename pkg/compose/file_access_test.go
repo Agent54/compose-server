@@ -299,7 +299,7 @@ func TestRestrictedBackendPinsRootBeforeRequests(t *testing.T) {
 	assert.ErrorContains(t, err, "outside the stacks folder")
 }
 
-func TestRestrictedBuildRejectsSecretFieldInjection(t *testing.T) {
+func TestRestrictedBuildKeepsSecretFieldsSeparate(t *testing.T) {
 	service, root, outside := restrictedStacks(t)
 	stackFile(t, root, "key", "secret")
 	config := stackFile(t, root, "compose.yaml", fmt.Sprintf(`services:
@@ -309,8 +309,11 @@ func TestRestrictedBuildRejectsSecretFieldInjection(t *testing.T) {
       secrets: [{source: key, target: 'key,src=%s'}]
 secrets: {key: {file: key}}
 `, filepath.Join(outside, "secret")))
-	_, err := service.LoadProject(t.Context(), api.ProjectLoadOptions{WorkingDir: root, ConfigPaths: []string{config}})
-	assert.ErrorContains(t, err, "must not contain commas")
+	project, err := service.LoadProject(t.Context(), api.ProjectLoadOptions{WorkingDir: root, ConfigPaths: []string{config}})
+	assert.NilError(t, err)
+	secrets, _ := toBakeSecrets(project, project.Services["app"].Build.Secrets)
+	assert.Equal(t, secrets[0].ID, "key,src="+filepath.Join(outside, "secret"))
+	assert.Equal(t, secrets[0].FilePath, filepath.Join(root, "key"))
 }
 
 func TestRestrictedBuildRejectsIgnoreFileSymlinks(t *testing.T) {
@@ -378,6 +381,81 @@ func TestRestrictedBuildRequiresLocalCheckoutOfRemoteContexts(t *testing.T) {
 			config := stackFile(t, root, "compose.yaml", "services: {app: {build: "+build+"}}")
 			_, err := service.LoadProject(t.Context(), api.ProjectLoadOptions{WorkingDir: root, ConfigPaths: []string{config}})
 			assert.ErrorContains(t, err, "check out the context inside the stacks folder")
+		})
+	}
+}
+
+func TestRestrictedCachesMatchBuildxOptionParsing(t *testing.T) {
+	_, root, outside := restrictedStacks(t)
+	p := &fileAccessPolicy{root: root}
+	for _, pattern := range []string{
+		"TYPE=local,SRC=%s", "type=local,DEST=%s", "TyPe=local,sRc=%s",
+		"type=local,src=inside,SRC=%s", `type=local,"SRC=%s,branch"`,
+	} {
+		t.Run(pattern, func(t *testing.T) {
+			assert.ErrorContains(t, p.checkCaches(root, []string{fmt.Sprintf(pattern, outside)}), "outside the stacks folder")
+		})
+	}
+	assert.NilError(t, p.checkCaches(root, []string{"type=local,SRC=" + outside + ",src=inside"}))
+	assert.NilError(t, p.checkCaches(root, []string{"TYPE=local,SRC=inside,DEST=inside"}))
+	assert.NilError(t, p.checkCaches(root, []string{"registry.example.com/cache", ""}))
+	assert.ErrorContains(t, p.checkCaches(root, []string{"type=local,src"}), "invalid cache option")
+}
+
+func TestRestrictedBuildScansEnabledAdditionalContextDependencies(t *testing.T) {
+	service, root, outside := restrictedStacks(t)
+	stackFile(t, root, "app/Dockerfile", "FROM scratch\n")
+	stackFile(t, root, "base/Dockerfile", "FROM scratch\n")
+	stackFile(t, root, "leaf/Dockerfile", "FROM scratch\n")
+	project := &types.Project{
+		Name: "test", WorkingDir: root,
+		Services: types.Services{"app": {Name: "app", Build: &types.BuildConfig{
+			Context: filepath.Join(root, "app"), AdditionalContexts: types.Mapping{"base": "service:base"},
+		}}},
+		DisabledServices: types.Services{
+			"base": {Name: "base", Profiles: []string{"hidden"}, Build: &types.BuildConfig{
+				Context: filepath.Join(root, "base"), AdditionalContexts: types.Mapping{"leaf": "service:leaf"},
+			}},
+			"leaf": {Name: "leaf", Profiles: []string{"hidden"}, Build: &types.BuildConfig{Context: filepath.Join(root, "leaf")}},
+		},
+	}
+	assert.NilError(t, os.Symlink(outside, filepath.Join(root, "leaf", "escape")))
+	err := service.Build(t.Context(), project, api.BuildOptions{Services: []string{"app"}})
+	assert.ErrorContains(t, err, "outside the stacks folder")
+}
+
+func TestRestrictedExtendsTracksServicesSeparately(t *testing.T) {
+	for _, content := range []string{
+		"services: {base: {image: busybox}, app: {extends: {file: compose.yaml, service: base}}}",
+		"services: {base: {image: busybox}, middle: {extends: base}, app: {extends: {file: compose.yaml, service: middle}}}",
+		"services: {base: {image: busybox}, middle: {extends: {file: other.yaml, service: other}}, app: {extends: middle}}",
+	} {
+		t.Run(content, func(t *testing.T) {
+			service, root, _ := restrictedStacks(t)
+			config := stackFile(t, root, "compose.yaml", content)
+			stackFile(t, root, "other.yaml", "services: {other: {extends: {file: compose.yaml, service: base}}}")
+			project, err := service.LoadProject(t.Context(), api.ProjectLoadOptions{WorkingDir: root, ConfigPaths: []string{config}})
+			assert.NilError(t, err)
+			assert.Equal(t, project.Services["app"].Image, "busybox")
+		})
+	}
+}
+
+func TestRestrictedComposeStillRejectsRealCycles(t *testing.T) {
+	for _, test := range []struct{ name, main, other, message string }{
+		{"include", "include: [other.yaml]\nservices: {}", "include: [compose.yaml]\nservices: {}", "cyclic Compose include"},
+		{"same-file extends", "services: {app: {extends: base}, base: {extends: app}}", "services: {}", "cyclic Compose extends"},
+		{
+			"cross-file extends", "services: {app: {extends: {file: other.yaml, service: base}}}",
+			"services: {base: {extends: {file: compose.yaml, service: app}}}", "cyclic Compose extends",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, root, _ := restrictedStacks(t)
+			config := stackFile(t, root, "compose.yaml", test.main)
+			stackFile(t, root, "other.yaml", test.other)
+			_, err := service.LoadProject(t.Context(), api.ProjectLoadOptions{WorkingDir: root, ConfigPaths: []string{config}})
+			assert.ErrorContains(t, err, test.message)
 		})
 	}
 }

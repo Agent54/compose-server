@@ -17,7 +17,6 @@
 package compose
 
 import (
-	"encoding/csv"
 	"fmt"
 	"io/fs"
 	"os"
@@ -26,6 +25,7 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/paths"
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/tonistiigi/go-csvvalue"
 )
 
 type fileAccessPolicy struct {
@@ -110,9 +110,6 @@ func (p *fileAccessPolicy) checkProject(project *types.Project) error {
 	for _, service := range project.AllServices() {
 		if err := p.checkService(project.WorkingDir, service); err != nil {
 			return fmt.Errorf("service %s: %w", service.Name, err)
-		}
-		if err := p.checkBuildSecrets(project, service.Build); err != nil {
-			return err
 		}
 	}
 	for _, volume := range project.Volumes {
@@ -240,14 +237,25 @@ func (p *fileAccessPolicy) checkContext(base, name string) error {
 
 func (p *fileAccessPolicy) checkCaches(base string, caches []string) error {
 	for _, entry := range caches {
-		fields, err := csv.NewReader(strings.NewReader(entry)).Read()
+		// Buildx treats entries without '=' as registry references and uses
+		// csvvalue plus case-insensitive option keys for the long syntax.
+		if !strings.Contains(entry, "=") {
+			continue
+		}
+		fields, err := csvvalue.Fields(entry, nil)
 		if err != nil {
 			return err
 		}
 		attributes := map[string]string{}
 		for _, field := range fields {
-			key, value, _ := strings.Cut(field, "=")
-			attributes[key] = value
+			key, value, ok := strings.Cut(field, "=")
+			if !ok {
+				return fmt.Errorf("invalid cache option %q", field)
+			}
+			attributes[strings.ToLower(key)] = value
+		}
+		if attributes["type"] == "" {
+			return fmt.Errorf("cache type required in %q", entry)
 		}
 		if attributes["type"] == "local" {
 			for _, name := range []string{attributes["src"], attributes["dest"]} {
@@ -257,21 +265,6 @@ func (p *fileAccessPolicy) checkCaches(base string, caches []string) error {
 					}
 				}
 			}
-		}
-	}
-	return nil
-}
-
-func (p *fileAccessPolicy) checkBuildSecrets(project *types.Project, build *types.BuildConfig) error {
-	if build == nil {
-		return nil
-	}
-	// Bake encodes these references as comma-separated fields. Reject values
-	// that could inject another src= after the validated source path.
-	for _, secret := range build.Secrets {
-		resource := project.Secrets[secret.Source]
-		if strings.ContainsAny(secret.Target+resource.File+resource.Environment, ",\r\n") {
-			return fmt.Errorf("build secret fields must not contain commas or newlines")
 		}
 	}
 	return nil
