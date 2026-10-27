@@ -204,6 +204,62 @@ func TestRestrictedProjectInheritsProcessEnvironment(t *testing.T) {
 	assert.Equal(t, *env["PWD"], root)
 }
 
+func TestRestrictedProjectInterpolatesBindSourcesBeforeInspection(t *testing.T) {
+	for _, source := range []string{"process", "dotenv"} {
+		t.Run(source, func(t *testing.T) {
+			service, root, _ := restrictedStacks(t)
+			t.Setenv("STACKS_PATH", root)
+			if source == "dotenv" {
+				assert.NilError(t, os.Unsetenv("STACKS_PATH"))
+				stackFile(t, root, ".env", "STACKS_PATH="+root+"\n")
+			}
+			stackFile(t, root, "compose.yaml", `services:
+  app:
+    image: busybox
+    volumes:
+      - "${STACKS_PATH}:/stacks/"
+`)
+			project, err := service.LoadProject(t.Context(), api.ProjectLoadOptions{WorkingDir: root})
+			assert.NilError(t, err)
+			assert.Equal(t, project.Services["app"].Volumes[0].Source, root)
+		})
+	}
+}
+
+func TestRestrictedInspectionKeepsFinalConsistencyChecks(t *testing.T) {
+	for _, test := range []struct{ name, content, message string }{
+		{"dependency", "services: {app: {image: busybox, depends_on: [missing]}}", "depends on undefined service"},
+		{"network", "services: {app: {image: busybox, networks: [missing]}}", "refers to undefined network"},
+		{"schema", "services: {app: {image: busybox, unknown_setting: true}}", "unknown_setting"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, root, _ := restrictedStacks(t)
+			stackFile(t, root, "compose.yaml", test.content)
+			_, err := service.LoadProject(t.Context(), api.ProjectLoadOptions{WorkingDir: root})
+			assert.ErrorContains(t, err, test.message)
+		})
+	}
+}
+
+func TestRestrictedInspectionKeepsFinalIncludesAndPathResolution(t *testing.T) {
+	service, root, _ := restrictedStacks(t)
+	stackFile(t, root, "dependency.yaml", "services: {dependency: {image: busybox}}")
+	stackFile(t, root, "compose.yaml", `name: inspection-test
+include: [dependency.yaml]
+services:
+  app:
+    image: busybox
+    depends_on: [dependency]
+    volumes: ["./data:/data"]
+    environment: {PROJECT: "${COMPOSE_PROJECT_NAME}"}
+`)
+	project, err := service.LoadProject(t.Context(), api.ProjectLoadOptions{WorkingDir: root})
+	assert.NilError(t, err)
+	assert.Equal(t, project.Services["dependency"].Image, "busybox")
+	assert.Equal(t, project.Services["app"].Volumes[0].Source, filepath.Join(root, "data"))
+	assert.Equal(t, *project.Services["app"].Environment["PROJECT"], "inspection-test")
+}
+
 func TestRestrictedProjectGuardsInterpolatedFileReferences(t *testing.T) {
 	service, root, outside := restrictedStacks(t)
 	file := stackFile(t, outside, "service.env", "TOKEN=external\n")

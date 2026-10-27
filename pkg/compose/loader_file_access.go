@@ -153,11 +153,15 @@ func (p *fileAccessPolicy) checkComposeFiles(ctx context.Context, o *cli.Project
 		opts.SkipInclude = true
 		opts.SkipExtends = true
 		opts.SkipValidation = true
+		opts.SkipConsistencyCheck = true
 		opts.ResolvePaths = false
 	})(&inspection); err != nil {
 		return err
 	}
-	if _, err := inspection.LoadModel(ctx); err != nil {
+	// LoadModel does not forward ProjectOptions.Environment to compose-go's
+	// loader. LoadProject preserves interpolation and COMPOSE_PROJECT_NAME;
+	// env/label resolution and include/extends reads remain disabled here.
+	if _, err := inspection.LoadProject(ctx); err != nil {
 		return err
 	}
 	for _, file := range o.ConfigPaths {
