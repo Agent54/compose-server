@@ -17,6 +17,7 @@
 package serve
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -28,6 +29,53 @@ import (
 	composepkg "github.com/docker/compose/v5/pkg/compose"
 	"github.com/docker/compose/v5/pkg/mocks"
 )
+
+func TestUpExplicitBuildUsesCLIPolicy(t *testing.T) {
+	for _, build := range []bool{false, true} {
+		t.Run(map[bool]string{false: "reuse images", true: "rebuild images"}[build], func(t *testing.T) {
+			backend := mocks.NewMockCompose(gomock.NewController(t))
+			app := newServerApp(serveConfig{rootDir: t.TempDir()}, func(...composepkg.Option) (composeapi.Compose, error) {
+				return backend, nil
+			}, nil)
+			version := "changed-version"
+			project := &types.Project{Name: "darc", Services: types.Services{
+				"vscode": {
+					Name: "vscode", PullPolicy: types.PullPolicyMissing,
+					Build:     &types.BuildConfig{Context: "./darc-code", Args: types.MappingWithEquals{"CODE_SERVER_VERSION": &version}},
+					DependsOn: types.DependsOnConfig{"builder": {Condition: types.ServiceConditionStarted}},
+				},
+				"builder": {Name: "builder", Build: &types.BuildConfig{Context: "./builder"}, PullPolicy: types.PullPolicyNever},
+				"db":      {Name: "db", Image: "postgres", PullPolicy: types.PullPolicyAlways},
+			}}
+			loads := 1
+			if build {
+				loads++
+			}
+			backend.EXPECT().LoadProject(gomock.Any(), gomock.Any()).Return(project, nil).Times(loads)
+			backend.EXPECT().Up(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, loaded *types.Project, options composeapi.UpOptions) error {
+				webPolicy, dependencyPolicy := types.PullPolicyMissing, types.PullPolicyNever
+				if build {
+					webPolicy, dependencyPolicy = types.PullPolicyBuild, types.PullPolicyBuild
+					assert.Assert(t, options.Create.Build != nil)
+					assert.DeepEqual(t, options.Create.Build.Services, []string{"vscode"})
+					assert.Equal(t, options.Create.Build.Deps, true)
+				} else {
+					assert.Assert(t, options.Create.Build == nil)
+				}
+				assert.Equal(t, loaded.Services["vscode"].PullPolicy, webPolicy)
+				assert.Equal(t, loaded.Services["builder"].PullPolicy, dependencyPolicy)
+				assert.Equal(t, loaded.Services["db"].PullPolicy, types.PullPolicyAlways)
+				assert.Equal(t, loaded.Services["vscode"].Build.Context, "./darc-code")
+				assert.Equal(t, *loaded.Services["vscode"].Build.Args["CODE_SERVER_VERSION"], version)
+				assert.DeepEqual(t, options.Create.Services, []string{"vscode"})
+				assert.Equal(t, options.Start.Watch, false)
+				return nil
+			})
+			_, err := app.upProject(t.Context(), upRequest{Project: "darc", Path: app.config.rootDir, Services: []string{"vscode"}, Build: build})
+			assert.NilError(t, err)
+		})
+	}
+}
 
 func TestBuildHistoryRetainsServicesWithoutSharingMutableSlices(t *testing.T) {
 	registry := newBuildRegistry()

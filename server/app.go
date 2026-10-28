@@ -256,6 +256,7 @@ func (a *serverApp) upProject(ctx context.Context, req upRequest) (actionRespons
 		}
 		var buildPtr *composeapi.BuildOptions
 		if req.Build {
+			prepareProjectForBuild(project)
 			build := a.newBuildOptionsForServices(project, services)
 			buildPtr = &build
 		}
@@ -1336,6 +1337,16 @@ func (a *serverApp) resolvePathValue(root, requestPath string) (string, error) {
 	return candidate, nil
 }
 
+// Match the CLI's --build policy: an existing local image must not skip the build.
+func prepareProjectForBuild(project *types.Project) {
+	for name, service := range project.Services {
+		if service.Build != nil {
+			service.PullPolicy = types.PullPolicyBuild
+			project.Services[name] = service
+		}
+	}
+}
+
 func (a *serverApp) newBuildOptionsForServices(project *types.Project, services []string) composeapi.BuildOptions {
 	return composeapi.BuildOptions{
 		Progress: "plain",
@@ -1400,6 +1411,7 @@ func watchModeUpOptions(project *types.Project, build composeapi.BuildOptions, c
 	selectedServices := serviceSelection(project, services)
 	var buildPtr *composeapi.BuildOptions
 	if buildEnabled {
+		prepareProjectForBuild(project)
 		buildCopy := build
 		buildPtr = &buildCopy
 	}
