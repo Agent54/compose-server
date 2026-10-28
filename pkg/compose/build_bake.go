@@ -318,39 +318,14 @@ func (s *composeService) prepareBakeBuild(project *types.Project, serviceToBeBui
 // keys, at the serialization boundary so neither interpolation nor directives can
 // reinterpret Compose's resolved paths, arguments, labels, or other settings.
 func marshalBakeConfig(config bakeConfig) ([]byte, error) {
-	data, err := json.Marshal(config)
+	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return nil, err
 	}
-	var document any
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	if err := decoder.Decode(&document); err != nil {
-		return nil, err
-	}
-	return json.MarshalIndent(escapeBakeTemplates(document), "", "  ")
-}
-
-func escapeBakeTemplates(value any) any {
-	switch value := value.(type) {
-	case string:
-		return escapeBakeString(value)
-	case map[string]any:
-		escaped := make(map[string]any, len(value))
-		for key, item := range value {
-			escaped[escapeBakeString(key)] = escapeBakeTemplates(item)
-		}
-		return escaped
-	case []any:
-		for index, item := range value {
-			value[index] = escapeBakeTemplates(item)
-		}
-	}
-	return value
-}
-
-func escapeBakeString(value string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(value, "${", "$${"), "%{", "%%{")
+	// Both sequences can only occur inside JSON strings and contain no JSON
+	// escapes, so escape the encoded bytes without decoding the configuration.
+	data = bytes.ReplaceAll(data, []byte("${"), []byte("$${"))
+	return bytes.ReplaceAll(data, []byte("%{"), []byte("%%{")), nil
 }
 
 // bakeTargetNames produces a unique ID for each service, used as bake target.

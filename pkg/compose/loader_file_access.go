@@ -60,6 +60,14 @@ func (p *fileAccessPolicy) projectOptions(options api.ProjectLoadOptions) (*cli.
 	fns = append(fns,
 		cli.WithWorkingDirectory(workingDir),
 		cli.WithOsEnv,
+	)
+	// Match the ordinary loader's fallback when the launcher has no PWD.
+	if _, present := os.LookupEnv("PWD"); !present {
+		if pwd, err := os.Getwd(); err == nil {
+			fns = append(fns, cli.WithEnv([]string{"PWD=" + pwd}))
+		}
+	}
+	fns = append(fns,
 		p.withEnvFiles(options.EnvFiles),
 		cli.WithDotEnv,
 		cli.WithConfigFileEnv,

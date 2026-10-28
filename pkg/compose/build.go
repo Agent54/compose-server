@@ -83,12 +83,6 @@ func (s *composeService) build(ctx context.Context, project *types.Project, opti
 	if err != nil {
 		return nil, err
 	}
-	// Additional service contexts can enable profiled build dependencies. Scan
-	// the resulting service set before either builder can consume their trees.
-	if err := s.fileAccess.checkBuildContexts(project); err != nil {
-		return nil, err
-	}
-
 	err = project.ForEachService(options.Services, func(serviceName string, service *types.ServiceConfig) error {
 		if service.Build == nil {
 			return nil

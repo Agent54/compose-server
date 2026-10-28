@@ -87,9 +87,13 @@ recursive `include` and `extends.file` references, project and service env files
 label files, local build contexts and additional contexts, Dockerfiles and ignore
 files, local build caches, build SSH keys, file-backed configs and secrets,
 seccomp profiles, and watch sources. Dockerfiles may be outside their build
-context if they remain inside stacks. External symlinks in build and watch trees
-are rejected even when an ignore file excludes them. Default configuration lookup
-does not search parent directories. Remote Compose includes, Git/URL build
+context if they remain inside stacks. These checks inspect paths explicitly
+referenced by the configuration and matched watch events; they do not add walks
+through build contexts, watch folders, or cache folders to inspect their contents.
+They do not guarantee that every symlink inside those folders stays within stacks.
+Watch uses its existing ignore rules, with `.jj` excluded alongside `.git`.
+Default configuration lookup does not search parent directories. Remote Compose
+includes, Git/URL build
 contexts, and host service providers are unavailable through the server. Check
 out remote build contexts inside stacks before building. Image and service
 contexts remain supported.

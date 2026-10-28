@@ -18,8 +18,6 @@ package compose
 
 import (
 	"fmt"
-	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -62,7 +60,10 @@ func (p *fileAccessPolicy) path(base, name string) (string, error) {
 	var resolved string
 	// Consumers differ in whether they clean .. before opening a path. Both
 	// interpretations must stay inside stacks, including their symlink targets.
-	for _, candidate := range []string{name, filepath.Clean(name)} {
+	for i, candidate := range []string{name, filepath.Clean(name)} {
+		if i > 0 && candidate == name {
+			continue
+		}
 		current, err := resolveBindSource(candidate)
 		if err != nil {
 			return "", fmt.Errorf("resolve stack file %q: %w", name, err)
@@ -79,6 +80,12 @@ func (p *fileAccessPolicy) path(base, name string) (string, error) {
 }
 
 func (p *fileAccessPolicy) checkPaths(base string, names ...string) error {
+	if p == nil {
+		return nil
+	}
+	if base == "" {
+		base = p.root
+	}
 	for _, name := range names {
 		if name == "" {
 			continue
@@ -149,8 +156,8 @@ func (p *fileAccessPolicy) checkService(base string, service types.ServiceConfig
 		}
 	}
 	if service.Develop != nil {
-		for _, watch := range service.Develop.Watch {
-			if err := p.checkTree(base, watch.Path); err != nil {
+		for _, trigger := range service.Develop.Watch {
+			if err := p.checkPaths(base, trigger.Path); err != nil {
 				return err
 			}
 		}
@@ -227,9 +234,8 @@ func (p *fileAccessPolicy) checkContext(base, name string) error {
 		return nil
 	}
 	if remoteBuildContext(name) {
-		// The classic builder checks out Git contexts on the host. Files in
-		// that checkout can contain escaping symlinks, outside our validated
-		// local trees. Require an explicit checkout under stacks instead.
+		// The classic builder checks out Git contexts on the host outside the
+		// selected stacks folder. Require a checkout under stacks instead.
 		return fmt.Errorf("remote build contexts are unavailable in the Compose server; check out the context inside the stacks folder")
 	}
 	return p.checkPaths(base, name)
@@ -260,7 +266,7 @@ func (p *fileAccessPolicy) checkCaches(base string, caches []string) error {
 		if attributes["type"] == "local" {
 			for _, name := range []string{attributes["src"], attributes["dest"]} {
 				if name != "" {
-					if err := p.checkTree(base, name); err != nil {
+					if err := p.checkPaths(base, name); err != nil {
 						return err
 					}
 				}
@@ -281,73 +287,6 @@ func (p *fileAccessPolicy) checkSSH(base string, keys types.SSHConfig) error {
 		for _, name := range strings.Split(key.Path, ",") {
 			if err := p.checkPaths(base, name); err != nil {
 				return err
-			}
-		}
-	}
-	return nil
-}
-
-// Check every symlink, including ignored files: builders and watch backends have
-// different traversal rules, and may read .dockerignore before applying it.
-func (p *fileAccessPolicy) checkTree(base, name string) error {
-	if p == nil {
-		return nil
-	}
-	if base == "" {
-		base = p.root
-	}
-	root, err := p.path(base, name)
-	if err != nil {
-		return err
-	}
-	cleanRoot, err := p.path(base, filepath.Clean(localComposeReference(base, name)))
-	if err != nil {
-		return err
-	}
-	seen := map[string]bool{}
-	var walk func(string) error
-	walk = func(root string) error {
-		if seen[root] {
-			return nil
-		}
-		seen[root] = true
-		return filepath.WalkDir(root, func(name string, entry fs.DirEntry, err error) error {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			if err != nil || entry.Type()&os.ModeSymlink == 0 {
-				return err
-			}
-			target, err := p.path(base, name)
-			if err != nil {
-				return err
-			}
-			return walk(target)
-		})
-	}
-	if err := walk(root); err != nil {
-		return err
-	}
-	return walk(cleanRoot)
-}
-
-func (p *fileAccessPolicy) checkBuildContexts(project *types.Project) error {
-	if p == nil {
-		return nil
-	}
-	for _, service := range project.Services {
-		if service.Build == nil {
-			continue
-		}
-		contexts := []string{service.Build.Context}
-		for _, context := range service.Build.AdditionalContexts {
-			contexts = append(contexts, context)
-		}
-		for _, context := range contexts {
-			if !remoteBuildContext(context) {
-				if err := p.checkTree(project.WorkingDir, context); err != nil {
-					return err
-				}
 			}
 		}
 	}

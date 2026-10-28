@@ -204,6 +204,21 @@ func TestRestrictedProjectInheritsProcessEnvironment(t *testing.T) {
 	assert.Equal(t, *env["PWD"], root)
 }
 
+func TestRestrictedProjectPreservesMissingPWDFallback(t *testing.T) {
+	service, root, _ := restrictedStacks(t)
+	t.Chdir(root)
+	t.Setenv("PWD", "")
+	assert.NilError(t, os.Unsetenv("PWD"))
+	stackFile(t, root, "compose.yaml", `services:
+  app:
+    image: busybox
+    volumes: ["${PWD}:/app"]
+`)
+	project, err := service.LoadProject(t.Context(), api.ProjectLoadOptions{WorkingDir: root})
+	assert.NilError(t, err)
+	assert.Equal(t, project.Services["app"].Volumes[0].Source, root)
+}
+
 func TestRestrictedProjectInterpolatesBindSourcesBeforeInspection(t *testing.T) {
 	for _, source := range []string{"process", "dotenv"} {
 		t.Run(source, func(t *testing.T) {
@@ -273,13 +288,73 @@ func TestRestrictedProjectGuardsInterpolatedFileReferences(t *testing.T) {
 	assert.ErrorContains(t, err, "outside the stacks folder")
 }
 
+func TestRestrictedProjectDoesNotScanWatchContents(t *testing.T) {
+	for _, action := range []types.WatchAction{types.WatchActionSync, types.WatchActionRebuild} {
+		t.Run(string(action), func(t *testing.T) {
+			service, root, outside := restrictedStacks(t)
+			stackFile(t, root, "Dockerfile", "FROM scratch\n")
+			stackFile(t, root, ".jj/repo/marker", "metadata")
+			link := filepath.Join(root, ".jj", "repo", "config.toml")
+			assert.NilError(t, os.Symlink(filepath.Join(outside, "missing", "config.toml"), link))
+			stackFile(t, root, "compose.yaml", fmt.Sprintf(`services:
+  app:
+    build: .
+    develop:
+      watch:
+        - action: %s
+          path: .
+          target: /app
+          ignore: ["**/.jj/**"]
+`, action))
+			project, err := service.LoadProject(t.Context(), api.ProjectLoadOptions{WorkingDir: root})
+			assert.NilError(t, err)
+			assert.Equal(t, project.Services["app"].Develop.Watch[0].Path, root)
+			file := stackFile(t, outside, "payload", "external")
+			assert.NilError(t, os.Symlink(file, filepath.Join(root, "escape")))
+			_, err = service.LoadProject(t.Context(), api.ProjectLoadOptions{WorkingDir: root})
+			assert.NilError(t, err)
+		})
+	}
+}
+
+func TestRestrictedWatchDoesNotScanContentsAtStartup(t *testing.T) {
+	_, root, outside := restrictedStacks(t)
+	service := &composeService{fileAccess: &fileAccessPolicy{root: root}}
+	file := stackFile(t, outside, "payload", "external")
+	assert.NilError(t, os.Symlink(file, filepath.Join(root, "escape")))
+	config := &types.DevelopConfig{Watch: []types.Trigger{{Path: root, Target: "/app", Action: types.WatchActionSync}}}
+	paths, err := service.watchTriggerPaths(t.Context(), types.ServiceConfig{Name: "app"}, config, nil)
+	assert.NilError(t, err)
+	assert.DeepEqual(t, paths, []string{root})
+}
+
+func TestRestrictedWatchSkipsVCSMetadata(t *testing.T) {
+	_, root, outside := restrictedStacks(t)
+	service := &composeService{fileAccess: &fileAccessPolicy{root: root}}
+	for _, metadata := range []string{".git", ".jj"} {
+		stackFile(t, root, metadata+"/repo/marker", "metadata")
+		assert.NilError(t, os.Symlink(filepath.Join(outside, "missing"), filepath.Join(root, metadata, "repo", "config.toml")))
+	}
+	config := &types.DevelopConfig{Watch: []types.Trigger{{Path: root, Target: "/app", Action: types.WatchActionSync}}}
+	paths, err := service.watchTriggerPaths(t.Context(), types.ServiceConfig{Name: "app"}, config, nil)
+	assert.NilError(t, err)
+	assert.DeepEqual(t, paths, []string{root})
+	rules, err := getWatchRules(config, types.ServiceConfig{Name: "app"})
+	assert.NilError(t, err)
+	for _, metadata := range []string{".git", ".jj"} {
+		assert.Assert(t, rules[0].Matches(watch.FileEvent(filepath.Join(root, metadata, "repo", "config.toml"))) == nil)
+	}
+	assert.Assert(t, rules[0].Matches(watch.FileEvent(filepath.Join(root, "app.go"))) != nil)
+}
+
 func TestRestrictedBuildRechecksContextSymlinks(t *testing.T) {
 	service, root, outside := restrictedStacks(t)
-	config := stackFile(t, root, "compose.yaml", "services: {app: {build: .}}")
-	stackFile(t, root, "Dockerfile", "FROM scratch\n")
+	config := stackFile(t, root, "compose.yaml", "services: {app: {build: context}}")
+	stackFile(t, root, "context/Dockerfile", "FROM scratch\n")
 	project, err := service.LoadProject(t.Context(), api.ProjectLoadOptions{WorkingDir: root, ConfigPaths: []string{config}})
 	assert.NilError(t, err)
-	assert.NilError(t, os.Symlink(outside, filepath.Join(root, "new-link")))
+	assert.NilError(t, os.Rename(filepath.Join(root, "context"), filepath.Join(root, "original-context")))
+	assert.NilError(t, os.Symlink(outside, filepath.Join(root, "context")))
 	err = service.Build(t.Context(), project, api.BuildOptions{})
 	assert.ErrorContains(t, err, "outside the stacks folder")
 }
@@ -289,18 +364,6 @@ func TestRestrictedProjectDoesNotSearchParentDirectories(t *testing.T) {
 	stackFile(t, filepath.Dir(root), "compose.yaml", "services: {app: {image: busybox}}")
 	_, err := service.LoadProject(t.Context(), api.ProjectLoadOptions{WorkingDir: root})
 	assert.ErrorContains(t, err, "no Compose configuration")
-}
-
-func TestRestrictedTreesFollowInternalSymlinkTargets(t *testing.T) {
-	_, root, outside := restrictedStacks(t)
-	stackFile(t, root, "context/Dockerfile", "FROM scratch\n")
-	assert.NilError(t, os.Mkdir(filepath.Join(root, "other"), 0o755))
-	assert.NilError(t, os.Symlink(outside, filepath.Join(root, "other", "escape")))
-	assert.NilError(t, os.Symlink("../other", filepath.Join(root, "context", "link")))
-	p := &fileAccessPolicy{root: root}
-	assert.ErrorContains(t, p.checkTree(root, "context"), "outside the stacks folder")
-	project := &types.Project{WorkingDir: root, Services: types.Services{"app": {Build: &types.BuildConfig{Context: "context"}}}}
-	assert.ErrorContains(t, p.checkBuildContexts(project), "outside the stacks folder")
 }
 
 func TestRestrictedIncludeUsesActualWorkingDirectory(t *testing.T) {
@@ -423,7 +486,7 @@ func TestRestrictedBuildChecksBothContextPathInterpretations(t *testing.T) {
 	_, err := service.LoadProject(t.Context(), api.ProjectLoadOptions{WorkingDir: root, ConfigPaths: []string{config}})
 	assert.ErrorContains(t, err, "outside the stacks folder")
 	p := &fileAccessPolicy{root: root}
-	assert.ErrorContains(t, p.checkTree(root, context), "outside the stacks folder")
+	assert.ErrorContains(t, p.checkBuild(root, &types.BuildConfig{Context: context}), "outside the stacks folder")
 }
 
 func TestRestrictedBuildRequiresLocalCheckoutOfRemoteContexts(t *testing.T) {
@@ -458,7 +521,7 @@ func TestRestrictedCachesMatchBuildxOptionParsing(t *testing.T) {
 	assert.ErrorContains(t, p.checkCaches(root, []string{"type=local,src"}), "invalid cache option")
 }
 
-func TestRestrictedBuildScansEnabledAdditionalContextDependencies(t *testing.T) {
+func TestRestrictedBuildChecksDisabledAdditionalContextPaths(t *testing.T) {
 	service, root, outside := restrictedStacks(t)
 	stackFile(t, root, "app/Dockerfile", "FROM scratch\n")
 	stackFile(t, root, "base/Dockerfile", "FROM scratch\n")
@@ -475,7 +538,7 @@ func TestRestrictedBuildScansEnabledAdditionalContextDependencies(t *testing.T) 
 			"leaf": {Name: "leaf", Profiles: []string{"hidden"}, Build: &types.BuildConfig{Context: filepath.Join(root, "leaf")}},
 		},
 	}
-	assert.NilError(t, os.Symlink(outside, filepath.Join(root, "leaf", "escape")))
+	project.DisabledServices["leaf"].Build.Context = outside
 	err := service.Build(t.Context(), project, api.BuildOptions{Services: []string{"app"}})
 	assert.ErrorContains(t, err, "outside the stacks folder")
 }

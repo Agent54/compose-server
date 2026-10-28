@@ -303,7 +303,7 @@ func prepareRebuildTriggers(project *types.Project, serviceName string, service 
 func (s *composeService) watchTriggerPaths(ctx context.Context, service types.ServiceConfig, config *types.DevelopConfig, syncer sync.Syncer) ([]string, error) {
 	var paths []string
 	for _, trigger := range config.Watch {
-		if err := s.fileAccess.checkTree("", trigger.Path); err != nil {
+		if err := s.fileAccess.checkPaths("", trigger.Path); err != nil {
 			return nil, err
 		}
 		if isSync(trigger) && checkIfPathAlreadyBindMounted(trigger.Path, service.Volumes) {
@@ -345,10 +345,9 @@ func getWatchRules(config *types.DevelopConfig, service types.ServiceConfig) ([]
 		return nil, err
 	}
 
-	// add a hardcoded set of ignores on top of what came from .dockerignore
-	// some of this should likely be configurable (e.g. there could be cases
-	// where you want `.git` to be synced) but this is suitable for now
-	dotGitIgnore, err := watch.NewDockerPatternMatcher("/", []string{"**/.git/"})
+	// Exclude Git and Jujutsu metadata. Other directories
+	// follow the stack's Docker ignore file and develop.watch rules.
+	dotGitIgnore, err := watch.NewDockerPatternMatcher("/", []string{"**/.git/", "**/.jj/"})
 	if err != nil {
 		return nil, err
 	}
@@ -588,7 +587,7 @@ func (s *composeService) handleWatchBatch(ctx context.Context, project *types.Pr
 			if mapping == nil {
 				continue
 			}
-			if err := s.fileAccess.checkTree(project.WorkingDir, mapping.HostPath); err != nil {
+			if err := s.fileAccess.checkPaths(project.WorkingDir, mapping.HostPath); err != nil {
 				return err
 			}
 			options.LogTo.Log(api.WatchLogger, fmt.Sprintf("compose-server-watch-debug match service=%q action=%q event=%q rule=%q target=%q", rule.service, rule.Action, event, rule.Path, rule.Target))
@@ -787,14 +786,14 @@ func (s *composeService) pruneDanglingImagesOnRebuild(ctx context.Context, proje
 }
 
 // Walks develop.watch.path and checks which files should be copied inside the container
-// ignores develop.watch.ignore, Dockerfile, compose files, bind mounted paths and .git
+// ignores develop.watch.ignore, Dockerfile, compose files, bind mounted paths, .git and .jj
 func (s *composeService) initialSync(ctx context.Context, service types.ServiceConfig, trigger types.Trigger, syncer sync.Syncer) error {
 	dockerIgnores, err := watch.LoadDockerIgnore(service.Build)
 	if err != nil {
 		return err
 	}
 
-	dotGitIgnore, err := watch.NewDockerPatternMatcher("/", []string{"**/.git/"})
+	dotGitIgnore, err := watch.NewDockerPatternMatcher("/", []string{"**/.git/", "**/.jj/"})
 	if err != nil {
 		return err
 	}
