@@ -98,9 +98,21 @@ func newRouter(app *serverApp) router.Router {
 func (r *composeRouter) Routes() []router.Route {
 	routes := make([]router.Route, 0, len(serveRoutes()))
 	for _, spec := range serveRoutes() {
-		routes = append(routes, router.NewRoute(spec.method, spec.path, withJSONError(spec.handler(r))))
+		routes = append(routes, router.NewRoute(spec.method, spec.path, withJSONError(withDetachedCommands(spec.handler(r)))))
 	}
 	return routes
+}
+
+// Client disconnects stop observations, not commands that have already been issued.
+func withDetachedCommands(handler httputils.APIFunc) httputils.APIFunc {
+	return func(ctx context.Context, w http.ResponseWriter, req *http.Request, vars map[string]string) error {
+		switch req.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			ctx = context.WithoutCancel(ctx)
+			req = req.WithContext(ctx)
+		}
+		return handler(ctx, w, req, vars)
+	}
 }
 
 type errorResponse struct {
