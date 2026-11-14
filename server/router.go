@@ -593,6 +593,8 @@ func serveRoutes() []routeSpec {
 				{Name: "url", Type: "string", Description: "Credential-free HTTPS Git repository URL"},
 				{Name: "path", Type: "string", Description: "Optional parent path of up to three components beneath the serve root"},
 				{Name: "depth", Type: "integer", Description: "Optional Git history depth from 1 to 100; defaults to 100 (Git initially fetches one branch)"},
+				{Name: "branch", Type: "string", Description: "Optional branch; must match when reusing an existing checkout"},
+				{Name: "sparsePaths", Type: "array", Description: "Optional repository-relative folders; adds to an existing sparse checkout, or checks out the full repository when empty"},
 			},
 			handler: func(r *composeRouter) httputils.APIFunc { return r.checkoutRepository },
 		},

@@ -20,11 +20,16 @@ package serve
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+func setCheckoutCommandDirectory(cmd *exec.Cmd, directory *os.File) {
+	cmd.Dir = directory.Name()
+}
 
 func runCheckoutCommand(cmd *exec.Cmd) error {
 	job, err := windows.CreateJobObject(nil, nil)

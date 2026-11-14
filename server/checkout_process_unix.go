@@ -19,9 +19,22 @@
 package serve
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
+	"runtime"
 	"syscall"
 )
+
+// Linux can resolve directory descriptors through procfs. On other platforms
+// use the checked directory path while retaining its open handle.
+func setCheckoutCommandDirectory(cmd *exec.Cmd, directory *os.File) {
+	cmd.Dir = directory.Name()
+	if runtime.GOOS == "linux" {
+		// Go changes directory before remapping child file descriptors.
+		cmd.Dir = fmt.Sprintf("/proc/self/fd/%d", directory.Fd())
+	}
+}
 
 func runCheckoutCommand(cmd *exec.Cmd) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

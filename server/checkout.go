@@ -51,9 +51,11 @@ const (
 )
 
 type repoCheckoutRequest struct {
-	URL   string `json:"url"`
-	Path  string `json:"path,omitempty"`
-	Depth *int   `json:"depth,omitempty"`
+	URL         string   `json:"url"`
+	Path        string   `json:"path,omitempty"`
+	Depth       *int     `json:"depth,omitempty"`
+	Branch      string   `json:"branch,omitempty"`
+	SparsePaths []string `json:"sparsePaths,omitempty"`
 }
 
 type repoCheckoutResponse struct {
@@ -110,6 +112,9 @@ func (s *repoCheckoutService) checkout(ctx context.Context, request repoCheckout
 	if depth < 1 || depth > maxCheckoutGitDepth {
 		return repoCheckoutResponse{}, errdefs.InvalidParameter(fmt.Errorf("depth must be between 1 and %d", maxCheckoutGitDepth))
 	}
+	if err := validateCheckoutOptions(request); err != nil {
+		return repoCheckoutResponse{}, err
+	}
 
 	if s.rootErr != nil {
 		return repoCheckoutResponse{}, fmt.Errorf("open serve root: %w", s.rootErr)
@@ -120,6 +125,17 @@ func (s *repoCheckoutService) checkout(ctx context.Context, request repoCheckout
 	destination := filepath.FromSlash(relativePath)
 	unlock := s.locks.lock(destination)
 	defer unlock()
+	if err := preflightCheckoutParents(root, components); err != nil {
+		return repoCheckoutResponse{}, err
+	}
+	if _, err := root.Lstat(destination); err == nil {
+		operationCtx, cancel := context.WithTimeout(ctx, checkoutTimeout)
+		defer cancel()
+		if err := reuseRepositoryCheckout(operationCtx, root, destination, request); err != nil {
+			return repoCheckoutResponse{}, err
+		}
+		return repoCheckoutResponse{OK: true, URL: request.URL, Path: relativePath, Depth: depth}, nil
+	}
 	if err := preflightCheckoutPath(root, components, destination); err != nil {
 		return repoCheckoutResponse{}, err
 	}
@@ -139,7 +155,14 @@ func (s *repoCheckoutService) checkout(ctx context.Context, request repoCheckout
 
 	operationCtx, cancel := context.WithTimeout(ctx, checkoutTimeout)
 	defer cancel()
-	if err := s.clone(operationCtx, request.URL, cloned, depth); err != nil {
+	// Keep the clone hook for callers that provide their own transport.
+	clone := s.clone
+	if request.Branch != "" || len(request.SparsePaths) > 0 {
+		clone = func(ctx context.Context, repositoryURL, destination string, depth int) error {
+			return cloneGitRepositoryOptions(ctx, repositoryURL, destination, depth, request)
+		}
+	}
+	if err := clone(operationCtx, request.URL, cloned, depth); err != nil {
 		return repoCheckoutResponse{}, err
 	}
 	if err := operationCtx.Err(); err != nil {
@@ -285,6 +308,13 @@ func ensureCheckoutParent(root *os.Root, components []string) (string, error) {
 }
 
 func preflightCheckoutPath(root *os.Root, components []string, destination string) error {
+	if err := preflightCheckoutParents(root, components); err != nil {
+		return err
+	}
+	return requireAbsentCheckoutDestination(root, destination)
+}
+
+func preflightCheckoutParents(root *os.Root, components []string) error {
 	current := "."
 	if err := requireCheckoutGroupingParent(root, current); err != nil {
 		return err
@@ -308,7 +338,7 @@ func preflightCheckoutPath(root *os.Root, components []string, destination strin
 			return err
 		}
 	}
-	return requireAbsentCheckoutDestination(root, destination)
+	return nil
 }
 
 func requireCheckoutGroupingParent(root *os.Root, dir string) error {

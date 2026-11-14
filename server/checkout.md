@@ -1,6 +1,6 @@
 # Repository checkout (compose-server fork)
 
-`POST /v1.24/repos/checkout` clones an HTTPS repository into the stacks directory.
+`POST /v1.24/repos/checkout` clones or reuses an HTTPS repository in the stacks directory.
 The request is unchanged for public and private GitHub repositories:
 
 ```json
@@ -11,9 +11,29 @@ The request is unchanged for public and private GitHub repositories:
 repository is placed directly under the stacks root in its own named directory.
 `depth` defaults to 100 and must be between 1 and 100.
 
+`branch` optionally selects a branch on the first clone. `sparsePaths` optionally
+lists repository-relative folders to materialize using Git cone-mode sparse
+checkout. Root files are included by Git. For example:
+
+```json
+{"url":"https://github.com/Agent54/xe-harnesses","branch":"main","sparsePaths":["codex"]}
+```
+
+Sending the same URL and parent `path` with `"sparsePaths":["pi"]` reuses the
+checkout and adds Pi without removing Codex or local edits. Requests for the
+same destination are serialized. Existing full checkouts stay full. Omitting
+`sparsePaths` or sending an empty list expands an existing sparse checkout to
+the whole repository. Reuse checks the origin URL and requested branch; a
+different repository or branch produces HTTP 409 without switching or resetting
+the checkout. Non-repository directories and symlink destinations are rejected.
+Folder names use the same safe components as `path`, without its three-level
+depth limit. New sparse clones request blob filtering and defer checkout until
+the folders have been selected.
+
 Checkout parents may contain unrelated files, sockets, symlinks, and sibling
 projects. The actual parent path must contain only directories, with no
-symlinks, and the repository destination must not already exist.
+symlinks. An existing destination must be a matching Git repository with its own
+`.git` directory.
 
 To prevent accidental nesting, the server checks the serve root and each parent
 component for `.git` (including Git worktree files) and the default Compose and
