@@ -59,12 +59,13 @@ func TestUpBuildSurvivesClientDisconnect(t *testing.T) {
 	payload, err := json.Marshal(upRequest{Project: "demo", Path: root, Build: true})
 	assert.NilError(t, err)
 	request := httptest.NewRequestWithContext(requestCtx, http.MethodPost, "/up", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 
 	mux.ServeHTTP(response, request)
 
+	assert.Equal(t, response.Code, http.StatusOK, response.Body.String())
 	assert.ErrorIs(t, requestCtx.Err(), context.Canceled)
-	assert.Equal(t, response.Code, http.StatusOK)
 	history := app.listBuilds()
 	assert.Equal(t, len(history), 1)
 	assert.Equal(t, history[0].Status, "succeeded")
