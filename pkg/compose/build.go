@@ -103,7 +103,7 @@ func (s *composeService) build(ctx context.Context, project *types.Project, opti
 	if bake {
 		return s.doBuildBake(ctx, project, serviceToBuild, options)
 	}
-	return s.doBuildClassic(ctx, project, serviceToBuild, options)
+	return nil, fmt.Errorf("BuildKit is required; classic builds are disabled")
 }
 
 func (s *composeService) ensureImagesExists(ctx context.Context, project *types.Project, buildOpts *api.BuildOptions, quietPull bool) error {

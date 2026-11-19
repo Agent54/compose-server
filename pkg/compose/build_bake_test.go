@@ -24,8 +24,19 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/cli/cli/streams"
+	"go.uber.org/mock/gomock"
 	"gotest.tools/v3/assert"
+
+	"github.com/docker/compose/v5/pkg/mocks"
 )
+
+func TestBuildRejectsDisabledBuildKit(t *testing.T) {
+	cli := mocks.NewMockCli(gomock.NewController(t))
+	cli.EXPECT().BuildKitEnabled().Return(false, nil)
+	enabled, err := buildWithBake(cli)
+	assert.Equal(t, enabled, false)
+	assert.ErrorContains(t, err, "classic builds are disabled")
+}
 
 func TestBakeTargetNames(t *testing.T) {
 	project := &types.Project{

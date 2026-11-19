@@ -53,7 +53,7 @@ func TestVersionCommand(t *testing.T) {
 		{
 			name: "json flag",
 			args: []string{"--format", "json"},
-			want: `{"version":"v9.9.9-test"}` + "\n",
+			want: `{"version":"v9.9.9-test","builder":"buildkit"}` + "\n",
 		},
 	}
 

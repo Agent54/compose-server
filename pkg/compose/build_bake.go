@@ -35,7 +35,6 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/containerd/console"
-	"github.com/containerd/errdefs"
 	"github.com/docker/cli/cli-plugins/manager"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/command/image/build"
@@ -58,19 +57,17 @@ func buildWithBake(dockerCli command.Cli) (bool, error) {
 		return false, err
 	}
 	if !enabled {
-		return false, nil
+		return false, fmt.Errorf("BuildKit is required; classic builds are disabled (remove DOCKER_BUILDKIT=0)")
 	}
 
-	_, err = manager.GetPlugin("buildx", dockerCli, &cobra.Command{})
+	plugin, err := manager.GetPlugin("buildx", dockerCli, &cobra.Command{})
 	if err != nil {
-		if errdefs.IsNotFound(err) {
-			logrus.Warnf("buildx Docker CLI plugin not found: falling back to the classic builder. " +
-				"BuildKit-only build features (multi-arch, secrets, ssh, additional contexts, ...) will not be available")
-			return false, nil
-		}
-		return false, err
+		return false, fmt.Errorf("buildx is required; classic builds are disabled: %w", err)
 	}
-	return true, err
+	if plugin.Err != nil {
+		return false, fmt.Errorf("buildx is unavailable; classic builds are disabled: %w", plugin.Err)
+	}
+	return true, nil
 }
 
 // We _could_ use bake.* types from github.com/docker/buildx but long term plan is to remove buildx as a dependency
