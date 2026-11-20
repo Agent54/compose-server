@@ -1,9 +1,7 @@
 name: int autorelease
 
 on:
-  push:
-    branches:
-      - int
+  workflow_call:
 
 permissions:
   actions: write # dispatch the existing CI workflow on the new tag
@@ -39,8 +37,7 @@ jobs:
 
           prefix="${base_tag}-int."
           tag=''
-          # GitHub's default concurrency queue discards older pending runs.
-          # Let pushes run independently and retry if another run wins a tag.
+          # Retry if another successful CI run wins a tag.
           for attempt in {1..10}; do
             git fetch --quiet --no-tags origin 'refs/tags/v*:refs/tags/v*'
             maximum=0

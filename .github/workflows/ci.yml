@@ -342,6 +342,20 @@ jobs:
         with:
           files: ./coverage.txt
 
+  int-autorelease:
+    # Only tag the int commit after all of its CI checks have passed.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/int'
+    needs:
+      - binary-finalize
+      - validate
+      - test
+      - e2e
+      - coverage
+    permissions:
+      actions: write # dispatch CI on the validated release tag
+      contents: write # push the release tag
+    uses: ./.github/workflows/int-autorelease.yml
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
@@ -352,6 +366,7 @@ jobs:
       - validate
       - test
       - e2e
+      - coverage
     steps:
       -
         name: Checkout
