@@ -81,9 +81,10 @@ jobs:
           echo "Release tag: $tag"
 
       # A tag pushed with GITHUB_TOKEN does not trigger push workflows. An
-      # explicit dispatch runs the existing CI build and release jobs on it.
+      # explicit dispatch rebuilds with the tag version and publishes the release,
+      # reusing this run's checks only after CI verifies its successful completion.
       - name: Build and publish the tagged release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.tag.outputs.tag }}
-        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_TAG"
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_TAG" --field validated_run_id="$GITHUB_RUN_ID"

@@ -34,7 +34,7 @@ jobs:
       contents: read # same as global permission
       id-token: write # for signing attestation(s) with GitHub OIDC Token
     with:
-      runner: amd64
+      runner: ubuntu-24.04
       target: image-cross
       cache: true
       cache-scope: bin-image
@@ -59,7 +59,7 @@ jobs:
       contents: read # same as global permission
       id-token: write # for signing attestation(s) with GitHub OIDC Token
     with:
-      runner: amd64
+      runner: ubuntu-24.04
       target: image-module-cross
       cache: true
       cache-scope: module-image
@@ -78,4 +78,3 @@ jobs:
           username: docker
           connection_id: a295c8b7-54ab-4507-ac88-5c43003c73a5
 
- 
