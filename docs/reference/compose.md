@@ -60,6 +60,7 @@ Define and run multi-container applications with Docker
 | `--dry-run`            | `bool`        |         | Execute command in dry run mode                                                                     |
 | `--env-file`           | `stringArray` |         | Specify an alternate environment file                                                               |
 | `-f`, `--file`         | `stringArray` |         | Compose configuration files                                                                         |
+| `--no-classic-builder` | `bool`        |         | Require BuildKit and disable the classic builder                                                    |
 | `--parallel`           | `int`         | `-1`    | Control max parallelism, -1 for unlimited                                                           |
 | `--profile`            | `stringArray` |         | Specify a profile to enable                                                                         |
 | `--progress`           | `string`      |         | Set type of progress output (auto, tty, plain, json, quiet)                                         |

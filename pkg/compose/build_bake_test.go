@@ -20,22 +20,53 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/docker/cli/cli/config/configfile"
 	"github.com/docker/cli/cli/streams"
 	"go.uber.org/mock/gomock"
 	"gotest.tools/v3/assert"
 
+	"github.com/docker/compose/v5/pkg/api"
 	"github.com/docker/compose/v5/pkg/mocks"
 )
 
-func TestBuildRejectsDisabledBuildKit(t *testing.T) {
+func TestClassicBuilderPolicy(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		options []Option
+		wantErr string
+	}{
+		{name: "default allows classic", wantErr: "the classic builder doesn't support privileged mode"},
+		{name: "explicitly allowed", options: []Option{WithClassicBuilderDisabled(false)}, wantErr: "the classic builder doesn't support privileged mode"},
+		{name: "disabled", options: []Option{WithClassicBuilderDisabled(true)}, wantErr: "BuildKit is required by --no-classic-builder"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cli := mocks.NewMockCli(gomock.NewController(t))
+			cli.EXPECT().BuildKitEnabled().Return(false, nil)
+			service, err := NewComposeService(cli, test.options...)
+			assert.NilError(t, err)
+			project := &types.Project{Name: "test", Services: types.Services{
+				"app": {Name: "app", Build: &types.BuildConfig{Context: ".", Privileged: true}},
+			}}
+			// Classic rejects privileged builds before making daemon calls.
+			err = service.Build(t.Context(), project, api.BuildOptions{})
+			assert.ErrorContains(t, err, test.wantErr)
+		})
+	}
+}
+
+func TestNoClassicBuilderRejectsInvalidBuildx(t *testing.T) {
+	dir := t.TempDir()
+	assert.NilError(t, os.WriteFile(filepath.Join(dir, "docker-buildx"), []byte("invalid plugin"), 0o600))
 	cli := mocks.NewMockCli(gomock.NewController(t))
-	cli.EXPECT().BuildKitEnabled().Return(false, nil)
-	enabled, err := buildWithBake(cli)
+	cli.EXPECT().BuildKitEnabled().Return(true, nil)
+	cli.EXPECT().ConfigFile().Return(&configfile.ConfigFile{CLIPluginsExtraDirs: []string{dir}})
+	enabled, err := buildWithBake(cli, true)
 	assert.Equal(t, enabled, false)
-	assert.ErrorContains(t, err, "classic builds are disabled")
+	assert.ErrorContains(t, err, "buildx is required by --no-classic-builder")
 }
 
 func TestBakeTargetNames(t *testing.T) {

@@ -62,7 +62,7 @@ func runVersion(opts versionOptions, dockerCli command.Cli) {
 		return
 	}
 	if opts.format == formatter.JSON {
-		_, _ = fmt.Fprintf(dockerCli.Out(), "{\"version\":%q,\"builder\":\"buildkit\"}\n", internal.Version)
+		_, _ = fmt.Fprintf(dockerCli.Out(), "{\"version\":%q}\n", internal.Version)
 		return
 	}
 	_, _ = fmt.Fprintln(dockerCli.Out(), "Docker Compose version", internal.Version)

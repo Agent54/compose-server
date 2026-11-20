@@ -53,7 +53,7 @@ type serveConfig struct {
 }
 
 // NewCommand creates the compose daemon command.
-func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.Command {
+func NewCommand(dockerCli command.Cli, backendOptions func() []composepkg.Option) *cobra.Command {
 	var (
 		port            int
 		socketPath      string
@@ -68,6 +68,7 @@ func NewCommand(dockerCli command.Cli, backendOpts []composepkg.Option) *cobra.C
 		Short: "Serve a Compose HTTP API over a unix socket or TCP port",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			backendOpts := backendOptions()
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 

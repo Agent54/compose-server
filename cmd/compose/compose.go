@@ -438,12 +438,13 @@ func (o *BackendOptions) Add(option compose.Option) {
 func RootCommand(dockerCli command.Cli, backendOptions *BackendOptions) *cobra.Command {
 	opts := ProjectOptions{}
 	var (
-		ansi     string
-		noAnsi   bool
-		verbose  bool
-		version  bool
-		parallel int
-		dryRun   bool
+		ansi             string
+		noAnsi           bool
+		verbose          bool
+		version          bool
+		parallel         int
+		dryRun           bool
+		noClassicBuilder bool
 	)
 	c := &cobra.Command{
 		Short:            "Docker Compose",
@@ -505,6 +506,8 @@ func RootCommand(dockerCli command.Cli, backendOptions *BackendOptions) *cobra.C
 				backendOptions.Add(compose.WithMaxConcurrency(parallel))
 			}
 
+			backendOptions.Add(compose.WithClassicBuilderDisabled(noClassicBuilder))
+
 			// dry run detection
 			if dryRun {
 				backendOptions.Add(compose.WithDryRun)
@@ -513,9 +516,11 @@ func RootCommand(dockerCli command.Cli, backendOptions *BackendOptions) *cobra.C
 		},
 	}
 
-	var serverBackendOptions []compose.Option
-	if backendOptions != nil {
-		serverBackendOptions = backendOptions.Options
+	serverBackendOptions := func() []compose.Option {
+		if backendOptions == nil {
+			return nil
+		}
+		return backendOptions.Options
 	}
 
 	c.AddCommand(
@@ -587,6 +592,7 @@ func RootCommand(dockerCli command.Cli, backendOptions *BackendOptions) *cobra.C
 
 	c.Flags().StringVar(&ansi, "ansi", "auto", `Control when to print ANSI control characters ("never"|"always"|"auto")`)
 	c.Flags().IntVar(&parallel, "parallel", -1, `Control max parallelism, -1 for unlimited`)
+	c.Flags().BoolVar(&noClassicBuilder, "no-classic-builder", false, "Require BuildKit and disable the classic builder")
 	c.Flags().BoolVarP(&version, "version", "v", false, "Show the Docker Compose version information")
 	c.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "Execute command in dry run mode")
 	c.Flags().MarkHidden("version") //nolint:errcheck

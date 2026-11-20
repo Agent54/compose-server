@@ -35,6 +35,7 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/containerd/console"
+	"github.com/containerd/errdefs"
 	"github.com/docker/cli/cli-plugins/manager"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/command/image/build"
@@ -51,23 +52,34 @@ import (
 	"github.com/docker/compose/v5/pkg/api"
 )
 
-func buildWithBake(dockerCli command.Cli) (bool, error) {
+func buildWithBake(dockerCli command.Cli, noClassicBuilder bool) (bool, error) {
 	enabled, err := dockerCli.BuildKitEnabled()
 	if err != nil {
 		return false, err
 	}
 	if !enabled {
-		return false, fmt.Errorf("BuildKit is required; classic builds are disabled (remove DOCKER_BUILDKIT=0)")
+		if noClassicBuilder {
+			return false, fmt.Errorf("BuildKit is required by --no-classic-builder; remove DOCKER_BUILDKIT=0")
+		}
+		return false, nil
 	}
 
 	plugin, err := manager.GetPlugin("buildx", dockerCli, &cobra.Command{})
 	if err != nil {
-		return false, fmt.Errorf("buildx is required; classic builds are disabled: %w", err)
+		if noClassicBuilder {
+			return false, fmt.Errorf("buildx is required by --no-classic-builder: %w", err)
+		}
+		if errdefs.IsNotFound(err) {
+			logrus.Warnf("buildx Docker CLI plugin not found: falling back to the classic builder. " +
+				"BuildKit-only build features (multi-arch, secrets, ssh, additional contexts, ...) will not be available")
+			return false, nil
+		}
+		return false, err
 	}
-	if plugin.Err != nil {
-		return false, fmt.Errorf("buildx is unavailable; classic builds are disabled: %w", plugin.Err)
+	if noClassicBuilder && plugin.Err != nil {
+		return false, fmt.Errorf("buildx is required by --no-classic-builder: %w", plugin.Err)
 	}
-	return true, nil
+	return true, err
 }
 
 // We _could_ use bake.* types from github.com/docker/buildx but long term plan is to remove buildx as a dependency

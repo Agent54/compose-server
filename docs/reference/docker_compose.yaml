@@ -162,6 +162,16 @@ options:
       experimentalcli: false
       kubernetes: false
       swarm: false
+    - option: no-classic-builder
+      value_type: bool
+      default_value: "false"
+      description: Require BuildKit and disable the classic builder
+      deprecated: false
+      hidden: false
+      experimental: false
+      experimentalcli: false
+      kubernetes: false
+      swarm: false
     - option: parallel
       value_type: int
       default_value: "-1"

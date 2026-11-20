@@ -159,6 +159,14 @@ func WithMaxConcurrency(maxConcurrency int) Option {
 	}
 }
 
+// WithClassicBuilderDisabled prevents builds from using the classic builder.
+func WithClassicBuilderDisabled(disabled bool) Option {
+	return func(s *composeService) error {
+		s.noClassicBuilder = disabled
+		return nil
+	}
+}
+
 // WithDryRun configure Compose to run without actually applying changes
 func WithDryRun(s *composeService) error {
 	s.dryRun = true
@@ -212,9 +220,10 @@ type composeService struct {
 	contextInfo api.ContextInfo
 	proxyConfig map[string]string
 
-	clock          clockwork.Clock
-	maxConcurrency int
-	dryRun         bool
+	clock            clockwork.Clock
+	maxConcurrency   int
+	dryRun           bool
+	noClassicBuilder bool
 
 	runtimeAPIVersion runtimeVersionCache
 }

@@ -96,14 +96,14 @@ func (s *composeService) build(ctx context.Context, project *types.Project, opti
 		return imageIDs, nil
 	}
 
-	bake, err := buildWithBake(s.dockerCli)
+	bake, err := buildWithBake(s.dockerCli, s.noClassicBuilder)
 	if err != nil {
 		return nil, err
 	}
 	if bake {
 		return s.doBuildBake(ctx, project, serviceToBuild, options)
 	}
-	return nil, fmt.Errorf("BuildKit is required; classic builds are disabled")
+	return s.doBuildClassic(ctx, project, serviceToBuild, options)
 }
 
 func (s *composeService) ensureImagesExists(ctx context.Context, project *types.Project, buildOpts *api.BuildOptions, quietPull bool) error {
